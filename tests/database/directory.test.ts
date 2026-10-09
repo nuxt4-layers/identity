@@ -4,7 +4,7 @@ import { identityDirectoryConformance } from '../../conformance'
 import { database } from '../../server/internal/database'
 import { createDirectory } from '../../server/internal/directory'
 import type { TestDatabase } from '../support/database'
-import { breakablePool, createTestDatabase, hasDatabase, requireDatabaseInCi } from '../support/database'
+import { breakablePool, createTestDatabase, hasDatabase, requireDatabaseInCi, seed } from '../support/database'
 import { uuidv7 } from '../support/fixtures'
 
 requireDatabaseInCi()
@@ -31,13 +31,13 @@ describe.skipIf(!hasDatabase)('Identity\'s directory on PostgreSQL', async () =>
 
   const fixture: ConformanceFixture = {
     async seed(): Promise<ConformanceScenario> {
-      const sql = test.admin
+      const sql = { query: (text: string, values: unknown[] = []) => seed(test.admin, [[text, values]]) }
       const tenantId = uuidv7()
       const parentGroupId = uuidv7()
       const groupId = uuidv7()
       await sql.query(`insert into identity.tenant values ($1, null, 'active', 'uk-gdpr', 'uk', now(), 1)`, [tenantId])
-      await sql.query(`insert into identity."group" values ($1, $2, 'standard', null, 'Company', null, 'active', '{}'::jsonb, now(), 1)`, [parentGroupId, tenantId])
-      await sql.query(`insert into identity."group" values ($1, $2, 'standard', $3, 'Sales', null, 'active', '{}'::jsonb, now(), 1)`, [groupId, tenantId, parentGroupId])
+      await sql.query(`insert into identity."group" values ($1, $2, 'standard', null, 'Company', null, 'active', '{}'::jsonb, now(), 1, 'company')`, [parentGroupId, tenantId])
+      await sql.query(`insert into identity."group" values ($1, $2, 'standard', $3, 'Sales', null, 'active', '{}'::jsonb, now(), 1, 'sales')`, [groupId, tenantId, parentGroupId])
       const person = async (state: string) => {
         const identityId = uuidv7()
         const personalGroupId = state === 'pending' ? null : uuidv7()
@@ -63,7 +63,7 @@ describe.skipIf(!hasDatabase)('Identity\'s directory on PostgreSQL', async () =>
       return { memberId, groupId, parentGroupId, tenantId, pausedIdentityId, futureMemberId, lapsedMemberId, pendingIdentityId, unknownIdentityId: uuidv7(), unknownGroupId: uuidv7() }
     },
     async endMembership(identityId, groupId) {
-      await test.admin.query(`update identity.membership set state = 'ended', ended_at = now(), end_reason = 'left' where identity_id = $1 and group_id = $2`, [identityId, groupId])
+      await seed(test.admin, [[`update identity.membership set state = 'ended', ended_at = now(), end_reason = 'left' where identity_id = $1 and group_id = $2`, [identityId, groupId]]])
     },
     async breakSource() {
       breakable.break()

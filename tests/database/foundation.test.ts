@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { IDENTITY_MIGRATIONS, runIdentityMigrations } from '../../server/database/migrations'
 import type { TestDatabase } from '../support/database'
-import { createTestDatabase, hasDatabase, requireDatabaseInCi } from '../support/database'
+import { createTestDatabase, hasDatabase, requireDatabaseInCi, seed } from '../support/database'
 import { uuidv7 } from '../support/fixtures'
 
 requireDatabaseInCi()
@@ -54,8 +54,10 @@ describe.skipIf(!hasDatabase)('identity schema, roles and row-level security', (
     const a = uuidv7()
     const b = uuidv7()
     for (const tenant of [a, b]) {
-      await db.admin.query(`insert into identity.tenant values ($1, null, 'active', 'uk-gdpr', 'uk', now(), 1)`, [tenant])
-      await db.admin.query(`insert into identity."group" values ($1, $2, 'standard', null, 'Team', null, 'active', '{}'::jsonb, now(), 1)`, [uuidv7(), tenant])
+      await seed(db.admin, [
+        [`insert into identity.tenant values ($1, null, 'active', 'uk-gdpr', 'uk', now(), 1)`, [tenant]],
+        [`insert into identity."group" values ($1, $2, 'standard', null, 'Team', null, 'active', '{}'::jsonb, now(), 1, 'team')`, [uuidv7(), tenant]],
+      ])
     }
     const read = async (tenants: string[] | null) => {
       const client = await db.runtime.connect()

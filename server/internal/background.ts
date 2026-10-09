@@ -54,16 +54,22 @@ export async function relayOutbox(db: Database, publisher: IdentityEventPublishe
 
 export interface MaintenanceResult {
   expiredPendingIdentities: number
+  endedLapsedMemberships: number
 }
 
-/** Closes `pending` identities whose confirmation window has ended. */
+/**
+ * Closes `pending` identities whose confirmation window has ended, and
+ * records memberships past their end date as `ended` (`expired`). Access
+ * already treats both as over; this records it and announces it.
+ */
 export async function runMaintenance(db: Database, clock: Clock = systemClock, limit = 500): Promise<MaintenanceResult> {
   const correlationId = randomUUID()
-  const { rows } = await db.transaction(client => client.query<{ n: number }>(
-    `select ${db.schema}.expire_pending_identities($1, $2, $3) as n`,
-    [correlationId, clock.now(), limit],
+  const now = clock.now()
+  const { rows } = await db.transaction(client => client.query<{ expired: number, swept: number }>(
+    `select ${db.schema}.expire_pending_identities($1, $2, $3) as expired, ${db.schema}.sweep_lapsed_memberships($1, $2, $3) as swept`,
+    [correlationId, now, limit],
   ))
-  return { expiredPendingIdentities: rows[0]!.n }
+  return { expiredPendingIdentities: rows[0]!.expired, endedLapsedMemberships: rows[0]!.swept }
 }
 
 /**

@@ -99,3 +99,8 @@ Decided by the project owner on 2026-10-09, before phase 2:
 
 Found while building 2a: a `pending` person, or one closed without ever being confirmed, has no personal group yet, so the identity schema allows that, and only that.
 
+Taken while building 2b, within those decisions:
+
+- **Writes within one tenant are direct statements under row-level security**, so isolation protects writes as well as reads. The runtime role may insert child groups and memberships and update only the columns 2b changes; guard triggers refuse root groups and any ownership except the founding owner of a group created in the same transaction.
+- **Events come from row changes.** SECURITY DEFINER triggers write them to the outbox from the actual change, with the actor and correlation identifier the layer sets for the transaction. The runtime role never writes the outbox, so it cannot forge an event, and a change without a correlation identifier is refused, so none goes unannounced.
+

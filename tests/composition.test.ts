@@ -15,6 +15,8 @@ import {
 } from '../server/utils/identity-composition'
 import {
   getIdentityDirectory,
+  getIdentityDisclosureContext,
+  getIdentityGovernance,
   getIdentityProvisioning,
   provisionIdentityTenant,
   relayIdentityOutbox,
@@ -84,8 +86,15 @@ describe('Identity composition ports', () => {
   it('fails closed in every server function when the database is absent', async () => {
     expect(() => getIdentityProvisioning()).toThrow(IdentityCompositionError)
     expect(() => getIdentityDirectory()).toThrow(IdentityCompositionError)
+    expect(() => getIdentityDisclosureContext()).toThrow(IdentityCompositionError)
+    expect(() => getIdentityGovernance()).toThrow(IdentityCompositionError)
     expect(() => runIdentityMaintenance()).toThrow(IdentityCompositionError)
     expect(() => provisionIdentityTenant({ jurisdiction: 'uk-gdpr', dataRegion: 'uk', correlationId: '01a120c9-2cd1-784a-a3d6-f725b2cb2eab' })).toThrow(IdentityCompositionError)
+  })
+
+  it('refuses governance without the access-decision port, even with a database', () => {
+    provideIdentityDatabase({ dialect: 'postgres', pool })
+    expect(() => getIdentityGovernance()).toThrow(/IdentityAccessDecision/)
   })
 
   it('refuses to relay the outbox without a publisher, even with a database', () => {

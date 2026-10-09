@@ -312,10 +312,14 @@ The host calls these on the server; none is an HTTP route. Each uses the supplie
 | `getIdentityProvisioning()` | The provisioning port (§10.1) | `validation-failed` (malformed input, unknown or inactive home tenant), `forbidden` (unknown identity), `conflict` (not pending, or past its confirmation window), `unavailable` |
 | `getIdentityDirectory()` | The directory port (§10.2). Always reads the source of truth | `unavailable`: the port rejects, never answers null for a failure |
 | `relayIdentityOutbox({ limit? })` | Publishes up to `limit` (default 100) outbox events in order, at least once. Returns `{ published, failed }` | `unavailable` |
-| `runIdentityMaintenance()` | Closes `pending` identities past their confirmation window, writing `identity.provisioning-expired`. Phase 2b adds the membership dates sweeper | `unavailable` |
+| `getIdentityDisclosureContext()` | The disclosure-context port (§10.3), for the host's adapter to Profile | `validation-failed`, `unavailable` |
+| `getIdentityGovernance()` | Changes that need no second approver: `createGroup` (child group, `identity.groups:create`; the creator becomes founding owner), `renameGroup` (`identity.groups:rename`), `pauseMembership`, `resumeMembership` and `leaveGroup` (the member's own), and `actOnMember` (`remove` or `suspend` a member who is not an owner, with a reason code). Each takes the authenticated `subject` and a `correlationId` | `validation-failed` (malformed input, unsafe name), `forbidden` (unknown target, or refused by Authorisation), `insufficient-assurance`, `conflict` (last owner, personal group, confusable sibling name, depth, owner needing approval), `unavailable` |
+| `runIdentityMaintenance()` | Closes `pending` identities past their confirmation window (`identity.provisioning-expired`) and records memberships past their end date as `ended` (`expired`, `membership.ended`) | `unavailable` |
 | `provisionIdentityTenant({ jurisdiction, dataRegion, externalId?, correlationId })` | The platform operator's tenant provisioning; the jurisdiction and region must be registered in the policy. Writes `tenant.created` | `validation-failed`, `unavailable` |
 
 `IdentityError` carries the contract code; its message is for the server log only.
+
+Root groups, owners, reparenting, archiving, settings, membership dates and reinstatement need the approvals of phase 3 and are not yet available.
 
 ## 17. Versioning
 
