@@ -14,7 +14,7 @@ A Nuxt 4 foundation layer that answers one question for the rest of the platform
 
 Part of the `nuxt4-layers` Identity and Access Management (IAM) suite, with [`authentication`](https://github.com/nuxt4-layers/authentication), [`profile`](https://github.com/nuxt4-layers/profile), [`authorisation`](https://github.com/nuxt4-layers/authorisation) and [`iam-integration`](https://github.com/nuxt4-layers/iam-integration).
 
-**Status:** design round complete; phase 1 (foundation) in progress.
+**Status:** phase 1 of 6, the foundation. The contract, conformance suite and composition ports are in place; storage, governance and administration follow (see [docs/roadmap.md](docs/roadmap.md)).
 
 ## Owns
 
@@ -46,9 +46,46 @@ Group relationships do not confer access. Identity reports structure and state; 
 
 The suite architecture, state models and cross-capability processes are specified in [`iam-integration`](https://github.com/nuxt4-layers/iam-integration/blob/19df31458bab5a5190ab6590e58ef01ceabf9533/docs/architecture.md).
 
-## Documentation checks
+## Documentation
 
-`python3 scripts/check_markdown.py` checks headings, local links, and that links to other `nuxt4-layers` documents are pinned to a tag or commit.
+- [Contract](docs/contracts.md): identities, tenants, groups, memberships, invitations, approvals, ports and events
+- [Composition contract](docs/composition-contract.md): what a host supplies, and the store inventory
+- [Threat model and control register](docs/threat-model.md)
+- [Design decisions](docs/design-decisions.md): the Identity design round, including the Better Auth verification
+- [Roadmap](docs/roadmap.md), including Profile's dependencies on Identity
+
+## Using it
+
+```ts
+// nuxt.config.ts of the host
+export default defineNuxtConfig({
+  extends: ['@nuxt4-layers/identity'],
+})
+```
+
+```ts
+// server/plugins/identity.ts of the host
+export default defineNitroPlugin(() => {
+  provideIdentityDatabase({ dialect: 'postgres', pool })
+  provideIdentityAccessDecision(authorisationDecisionAdapter)
+  provideIdentityApprovalPolicy(authorisationApprovalAdapter)
+  provideIdentityEventPublisher(outboxRelay)
+})
+```
+
+Other members import types only from `@nuxt4-layers/identity/contracts`, and directory adapters are tested with `@nuxt4-layers/identity/conformance`.
+
+## Development
+
+```sh
+pnpm install
+pnpm dev:prepare
+pnpm check                       # nuxt typecheck + vitest
+pnpm build:playground            # proves the layer composes in a host
+python3 scripts/check_markdown.py
+```
+
+Requires Node 22 and pnpm 10.
 
 ## Licence
 

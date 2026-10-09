@@ -1,0 +1,72 @@
+{
+  "schemaVersion": "1",
+  "name": "@nuxt4-layers/identity",
+  "version": "0.1.0",
+  "classification": "foundation",
+  "provides": [
+    {
+      "capability": "Identity",
+      "contractVersion": "1"
+    }
+  ],
+  "requires": [
+    {
+      "capability": "Authorisation",
+      "contractVersion": "2",
+      "optional": false,
+      "purpose": "decides every governance and membership change Identity does not reserve to the person, and says who qualifies to approve; the host adapts it to Identity's access-decision and approval-policy ports, so there is no package dependency"
+    },
+    {
+      "capability": "Authentication",
+      "contractVersion": "1",
+      "optional": false,
+      "purpose": "the subject of every change is an AuthenticatedPrincipal whose principalId is the identity identifier; the host passes it in"
+    }
+  ],
+  "publicExports": [
+    ".",
+    "./contracts",
+    "./conformance",
+    "./capability"
+  ],
+  "ports": [
+    {
+      "port": "IdentityDatabase",
+      "optional": false
+    },
+    {
+      "port": "IdentityAccessDecision",
+      "optional": false
+    },
+    {
+      "port": "IdentityApprovalPolicy",
+      "optional": false
+    },
+    {
+      "port": "IdentityEventPublisher",
+      "optional": false
+    },
+    {
+      "port": "IdentityPolicy",
+      "optional": true
+    }
+  ],
+  "providesPorts": [
+    {
+      "port": "IdentityProvisioning",
+      "consumer": "Authentication"
+    },
+    {
+      "port": "IdentityDirectory",
+      "consumer": "Authorisation (as AuthorisationDirectory, through the host's adapter)"
+    },
+    {
+      "port": "IdentityDisclosureContextPort",
+      "consumer": "Profile"
+    }
+  ],
+  "integration": {
+    "consumers": "consume the contract and the provided ports through host adapters; never read the identity schema",
+    "composition": "host supplies ports from a Nitro plugin; persistence follows ADR-0002; Identity holds no personal data (ADR-0005)"
+  }
+}

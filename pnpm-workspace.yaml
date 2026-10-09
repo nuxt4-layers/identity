@@ -1,0 +1,14 @@
+# Supply-chain hardening (docs/threat-model.md T12).
+# Resolve only versions published at least a day ago; most malicious releases
+# are detected and pulled within hours.
+minimumReleaseAge: 1440
+# Transitive dependencies may come only from the registry, never from Git or
+# tarball URLs.
+blockExoticSubdeps: true
+
+overrides:
+  # GHSA-v5rq-49vh-5v5c (critical) in @simple-git/argv-parser 1.x, reached only
+  # through @nuxt/devtools -> simple-git 3.x (development only). simple-git 3.x
+  # accepts ^1.1.0; 2.x keeps the same API (vulnerabilityCheck) and only adds an
+  # export. Remove once devtools depends on simple-git 4.
+  '@simple-git/argv-parser': ^2.0.1

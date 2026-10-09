@@ -1,0 +1,31 @@
+name: Dependency review
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  dependency-review:
+    # Needs the dependency graph, which private repositories have only with
+    # GitHub Advanced Security. Runs once the repository is public.
+    if: ${{ !github.event.repository.private }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
+        with:
+          fail-on-severity: moderate
+          # Licences compatible with distributing an MIT-licensed layer.
+          deny-licenses: GPL-2.0-only, GPL-2.0-or-later, GPL-3.0-only, GPL-3.0-or-later, AGPL-3.0-only, AGPL-3.0-or-later
+          # node-forge is dual-licensed "BSD-3-Clause OR GPL-2.0-only"; it is used
+          # under BSD-3-Clause, so the GPL alternative does not apply.
+          allow-dependencies-licenses: pkg:npm/node-forge
+          comment-summary-in-pr: never
+          # Accepted risk, development tooling only (docs/threat-model.md §4):
+          # simple-git 3.x via nuxt -> @nuxt/devtools; no patched 3.x exists and
+          # 4.x breaks devtools. Remove when devtools moves off simple-git 3.x.
+          # braces 3.0.3 via nitropack -> globby -> micromatch (build-time globs, no patched release).
+          # node-forge 1.4.0 via nitropack -> listhen (dev HTTPS certificate generation only, no patched release).
+          allow-ghsas: GHSA-x6jw-m9v5-85vh, GHSA-858h-whjf-mvg5, GHSA-g4wm-2vf7-vfgr, GHSA-vfj7-8cjw-p6xm, GHSA-86w9-cpqp-85rv
