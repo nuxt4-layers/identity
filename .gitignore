@@ -1,0 +1,259 @@
+# ============================================================================
+# .gitignore: Nuxt 4 Monorepo (PNPM Workspace) Starter Template
+# ----------------------------------------------------------------------------
+# This comprehensive .gitignore is designed for multi-package adapters
+# utilizing:
+#   - Nuxt 4 (with Nuxt Layers / Nitro / Vite)
+#   - pnpm (primary package manager)
+#   - TypeScript, TailwindCSS, Pinia, Vitest, Storybook, Cypress
+#
+# It employs double-star (**) recursive patterns [cite: 2] to ensure this root
+# file safely ignores generated, secret, or volatile content everywhere, even
+# within nested packages[cite: 3].
+#
+# ORGANISATION NOTES
+# ------------------
+# Sections are ordered from most global + high-churn artifacts (node_modules,
+# env files, logs) to framework/tool-specific and finally to project-manager-specific
+# runtime datastore[cite: 1].
+#
+# EXCEPTIONS
+# ----------
+# Example files used for onboarding (e.g. .env.example) are re-included
+# using negation rules (`!`)[cite: 4, 5].
+#
+# CUSTOMISING PER-PACKAGE
+# -----------------------
+# If a specific package needs to include something normally ignored, add a
+# local .gitignore in that package folder with an explicit negation pattern[cite: 6].
+# ============================================================================
+
+**/.git
+
+# =============================================
+# 1. Package Managers & Dependency Stores
+# =============================================
+
+# Node dependency trees (high churn, generated)
+**/node_modules/
+
+# pnpm stores / virtual links
+**/.pnpm-store/
+**/.pnp
+**/.pnp.*
+**/.pnp.js
+
+# Lockfiles from other package managers (pnpm is canonical)
+**/package-lock.json
+**/yarn.lock
+# Removed: .firebase/functions/example/node_modules - Too specific, handled by **/node_modules/
+
+# Package manager debug logs
+**/app-monitor
+**/npm-debug.log*
+**/yarn-debug.log*
+**/yarn-error.log*
+**/pnpm-debug.log*
+
+
+# =============================================
+# 2. Environment & Secrets
+# =============================================
+
+# Local environment files (per env/machine)
+**/.env
+**/.env.*
+
+# SERVICE SECRETS (Do not commit credentials)
+**/service-account.json
+
+# EXAMPLES / TEMPLATES (Keep tracked for onboarding [cite: 4])
+!**/.env.example
+
+
+# =============================================
+# 3. System / OS Noise
+# =============================================
+
+# Microsoft Windows Specific
+**/Thumbs.db            # Windows thumbnail cache
+
+# Apple Mac Specific
+**/.AppleDouble         # Apple resource forks (network mounts)
+**/.DS_Store            # macOS Finder metadata
+**/.Spotlight-V100      # macOS indexing data (external drives)
+**/.Trashes             # macOS trash on external vols
+
+# 'Unix-like' OS specific
+**/lost+found/          # Linux FS recovery artifacts
+
+
+# =============================================
+# 4. Temporary & Backup Files
+# =============================================
+
+# Generic scratch directories
+**/tmp/
+**/temp/
+
+# Logs (Catching stray logs, dedicated tool logs are handled in respective sections)
+**/logs/
+**/*.log                # Catch logs anywhere (redundant but defensive)
+
+# Generic temp files
+*.tmp                   # Generic temp scratch files
+*.bak                   # Editor/backup cruft
+*.swp                   # Vim swap
+*.swo                   # Vim old swap
+*.orig                  # Merge conflict backups (git mergetool)
+
+# Legacy / temporary files (e.g., deleted during refactoring)
+# **/*.old # Generalising from nuxt.config.ts [cite: 16]
+
+
+# =============================================
+# 5. Nuxt / Nitro / Vite Build & Cache Artefacts
+# =============================================
+
+# Core Nuxt + build caches
+**/.cache/
+**/.nuxi/
+**/.nuxt/
+**/.output/
+**/.nitro/
+**/.vite/
+
+# Conventional build output (client bundles, libraries)
+**/dist/
+
+# Nuxt auto-generated route/page caches
+**/.nuxt/routes.json
+**/.nuxt/pages.json
+
+# Nuxt DevTools runtime cache/config
+.nuxt/devtools/
+
+# Nitro runtime + config
+**/nitro.json
+**/nitro.config.*
+**/*.nitro.*             # Catch misc Nitro build files
+**/storage/              # Nitro storage mount (local fs, db adapters, etc.)
+
+# Standalone server builds (targeted rules) [cite: 11]
+**/nitro/build/
+**/nitro/standalone/
+**/standalone/           # Legacy pattern retained
+
+# Specific file exclusions
+# Temporary exclude to ensure that private datastore does not pollute the Git repository[cite: 16].
+# nuxt.config.ts
+
+
+# =============================================
+# 6. Testing, Tooling, QA
+# =============================================
+
+# Vitest
+**/.vitest/
+**/vitest.*.json
+**/coverage/                # Coverage output (Vitest, Jest, etc.)
+
+# Playwright test artefacts
+**/test-results/
+**/playwright-report/
+
+
+# =============================================
+# 7. Vitepress documentation server
+# =============================================
+docs/.vitepress/dist
+docs/.vitepress/cache
+
+# Local development playgrounds / scratch apps
+**/playground/dist/
+**/playground/.nuxt/
+**/playground/.output/
+**/sandbox*/
+
+# Storybook
+.storybook/
+storybook-static/
+
+# Cypress test runner artefacts
+cypress/screenshots/
+cypress/videos/
+
+# Powershell Generated Layer Documentation
+powershell/output/
+
+
+# =============================================
+# 8. Backend / Hosting Providers
+# =============================================
+
+# Firebase (functions, emulators, CLI)
+!.firebase                              # Keep configuration file (from .gitignore)
+!.firebaserc                            # Keep configuration file (from .gitignore)
+!firebase.json                          # Keep configuration file (from .gitignore)
+
+# Keep Firebase generated import scripts (from .gitignore)
+!firebase/generated_scripts/importData.cjs
+!firebase/generated_scripts/importAuthUsers.cjs
+**/firebase-debug.log*
+
+# Firebase NPM lock (ignored when pnpm is standard)
+**/firebase/functions/package-lock.json
+
+# Appwrite emulator
+**/apphosting.emulator.yaml
+
+# Netlify build state
+**/.netlify/
+
+# Vercel project-manager state
+**/.vercel/
+
+
+# =============================================
+# 9. IDE / Editor Project Metadata
+# =============================================
+
+# JetBrains IDEs (WebStorm/IntelliJ/etc.)
+.idea/
+qodana.yaml                   # JetBrains Qodana CI config (ignore local)
+
+# JetBrains Fleet
+.fleet/
+
+# VS Code workspace files
+.vscode/
+
+# VS Code Example/Template Files (Keep tracked)
+!**/.vscode/settings.json.example
+!**/.vscode/extensions.json.example
+
+
+# =============================================
+# 10. TypeScript, Build Info & Transpiled Outputs
+# =============================================
+
+**/out-tsc/                  # tsc output (Angular-style or tooling builds)
+**/*.tsbuildinfo             # Incremental TS build state
+
+
+# =============================================
+# 11. Project-Specific Runtime & Dev Data
+# =============================================
+
+# Generated datastore/datasets, exported API pulls, etc.
+**/.data/                    # Hidden data scratch
+**/.development/             # Hidden variant
+**/data/
+**/development/              # Local development scratch trees
+**/sandbox*/                 # Local scratch (dup with Testing block ok for safety)
+# **/backend-mock-datastore-stores/  # Local backend datastore mockup.
+
+
+# ============================================================================
+# End of File
+# ============================================================================

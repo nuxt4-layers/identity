@@ -1,0 +1,30 @@
+name: Documentation Quality
+
+on:
+  pull_request:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  markdown:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Check Markdown headings and local links
+        run: python3 scripts/check_markdown.py
+
+  # Gate for the `quality` status check that the master ruleset requires of
+  # every repository. It passes only when every check above has passed.
+  quality:
+    needs: [markdown]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - run: echo "Documentation checks passed."

@@ -1,0 +1,13 @@
+# Every change needs a code owner's review (enforced by the master ruleset).
+* @steve-r-lewis
+
+# Called out so that adding owners later keeps these paths covered first.
+/.github/            @steve-r-lewis
+/server/             @steve-r-lewis
+/contracts/          @steve-r-lewis
+/shared/             @steve-r-lewis
+/conformance/        @steve-r-lewis
+/package.json        @steve-r-lewis
+/pnpm-lock.yaml      @steve-r-lewis
+/pnpm-workspace.yaml @steve-r-lewis
+/docs/threat-model.md @steve-r-lewis
