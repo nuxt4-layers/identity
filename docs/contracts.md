@@ -4,7 +4,7 @@
 
 Identity answers one question: **which identity is this, and what is it a member of, in which state?**
 
-Governing documents: the [Group Model Definition v0.1](https://github.com/nuxt4-layers/platform-architecture/blob/93f3d6fb144b72d61cfb172b6a50eb6c5af9f489/docs/identity/group-model-definition-v01.md), [ADR-0005](https://github.com/nuxt4-layers/platform-architecture/blob/93f3d6fb144b72d61cfb172b6a50eb6c5af9f489/docs/decisions/ADR-0005-iam-suite.md), and iam-integration's [state models](https://github.com/nuxt4-layers/iam-integration/blob/19df31458bab5a5190ab6590e58ef01ceabf9533/docs/states.md) and [processes](https://github.com/nuxt4-layers/iam-integration/blob/19df31458bab5a5190ab6590e58ef01ceabf9533/docs/processes/README.md). The design round's decisions, including amendments to those documents, are recorded in [design-decisions.md](design-decisions.md).
+Governing documents: the [Group Model Definition v0.1](https://github.com/nuxt4-layers/platform-architecture/blob/93f3d6fb144b72d61cfb172b6a50eb6c5af9f489/docs/identity/group-model-definition-v01.md), [ADR-0005](https://github.com/nuxt4-layers/platform-architecture/blob/93f3d6fb144b72d61cfb172b6a50eb6c5af9f489/docs/decisions/ADR-0005-iam-suite.md), and iam-integration's [state models](https://github.com/nuxt4-layers/iam-integration/blob/d46b16580a711b840edb1eef5db51b2fe3d0421f/docs/states.md) and [processes](https://github.com/nuxt4-layers/iam-integration/blob/d46b16580a711b840edb1eef5db51b2fe3d0421f/docs/processes/README.md). The design round's decisions, including amendments to those documents, are recorded in [design-decisions.md](design-decisions.md).
 
 ## 1. Boundaries
 
@@ -160,7 +160,7 @@ An invitation is a single-use bearer token (improvement register item 20):
 
 ## 8. Governance approvals
 
-Identity owns pending **governance** changes; Authorisation owns pending role and grant changes. Both follow iam-integration's [approvals process](https://github.com/nuxt4-layers/iam-integration/blob/19df31458bab5a5190ab6590e58ef01ceabf9533/docs/processes/approvals.md).
+Identity owns pending **governance** changes; Authorisation owns pending role and grant changes. Both follow iam-integration's [approvals process](https://github.com/nuxt4-layers/iam-integration/blob/d46b16580a711b840edb1eef5db51b2fe3d0421f/docs/processes/approvals.md).
 
 **Changes Identity records** (`GOVERNANCE_CHANGES`): create a root group, reparent, archive, change settings, change approval requirements, add, remove or suspend an owner, appoint an owner to an orphaned group, reinstate or reschedule a membership, suspend or reinstate an identity, and create a service identity. Each names the permission it exercises (§9) and whether it **confers** something on its beneficiary.
 
