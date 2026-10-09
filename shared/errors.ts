@@ -55,3 +55,18 @@ export class IdentityCompositionError extends Error {
     this.port = port
   }
 }
+
+/**
+ * An error with a contract code, raised by Identity's server functions and
+ * ports. The message is for the server log only; it never crosses HTTP.
+ */
+export class IdentityError extends Error {
+  readonly code: IdentityErrorCode
+
+  constructor(code: IdentityErrorCode, message: string = code) {
+    super(message)
+    this.name = 'IdentityError'
+    this.code = code
+  }
+}
+

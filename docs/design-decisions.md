@@ -86,3 +86,16 @@ Decided by the project owner on 2026-10-09, after reviewing the questions left o
 | A forwarded invitation link admits someone else | A group setting, `joining.invitationAcceptance`, by membership kind: `immediate` or `confirm`. With `confirm`, an accepted unbound invitation waits for an administrator to confirm who accepted. Default `confirm` for guests, `immediate` for members. Every acceptance notifies the inviter (`invitation.accepted`) |
 | A group name could identify a person | Accepted with treatment: names stay out of events, logs and port answers; a valid correction or erasure request about a group name is met by a rename, through iam-integration's data-subject request process; administration pages advise against personal names |
 
+## 12. Phase 2 storage decisions
+
+Decided by the project owner on 2026-10-09, before phase 2:
+
+| Question | Decision |
+|---|---|
+| Query layer | Hand-written, parameterised SQL over the host's `pg` pool, in append-only migrations. No runtime dependency beyond zod |
+| Row-level security for reads that cross tenants | Row-level security on tenant-isolated tables, keyed on the transaction-local `identity.tenant_ids`. Cross-tenant port reads (provisioning, sign-in status, directory, and later disclosure) go only through SECURITY DEFINER functions returning exactly the port's fields; the runtime role has no grant on the cross-tenant tables |
+| Background work | Host-scheduled server functions (`runIdentityMaintenance`, `relayIdentityOutbox`), idempotent and safe on several instances; access never depends on them |
+| Delivery | Two pull requests: 2a (storage, roles and row-level security, outbox, provisioning, directory) and 2b (groups, hierarchy, memberships, sweeper, disclosure context) |
+
+Found while building 2a: a `pending` person, or one closed without ever being confirmed, has no personal group yet, so the identity schema allows that, and only that.
+

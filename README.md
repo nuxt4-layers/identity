@@ -14,7 +14,7 @@ A Nuxt 4 foundation layer that answers one question for the rest of the platform
 
 Part of the `nuxt4-layers` Identity and Access Management (IAM) suite, with [`authentication`](https://github.com/nuxt4-layers/authentication), [`profile`](https://github.com/nuxt4-layers/profile), [`authorisation`](https://github.com/nuxt4-layers/authorisation) and [`iam-integration`](https://github.com/nuxt4-layers/iam-integration).
 
-**Status:** phase 1 of 6, the foundation. The contract, conformance suite and composition ports are in place; storage, governance and administration follow (see [docs/roadmap.md](docs/roadmap.md)).
+**Status:** phase 2a of 6. The contract, conformance suite, composition ports, PostgreSQL storage with row-level security, the outbox, provisioning and the directory are in place; groups and memberships, governance and administration follow (see [docs/roadmap.md](docs/roadmap.md)).
 
 ## Owns
 
@@ -65,8 +65,11 @@ export default defineNuxtConfig({
 
 ```ts
 // server/plugins/identity.ts of the host
-export default defineNitroPlugin(() => {
-  provideIdentityDatabase({ dialect: 'postgres', pool })
+export default defineNitroPlugin(async () => {
+  // At deployment, with the migration role's pool:
+  await migrateIdentityDatabase({ pool: migrationPool, runtimeRole: 'identity_runtime' })
+  // At request time, with the runtime role's pool:
+  provideIdentityDatabase({ dialect: 'postgres', pool: runtimePool })
   provideIdentityAccessDecision(authorisationDecisionAdapter)
   provideIdentityApprovalPolicy(authorisationApprovalAdapter)
   provideIdentityEventPublisher(outboxRelay)
@@ -74,6 +77,8 @@ export default defineNitroPlugin(() => {
 ```
 
 Other members import types only from `@nuxt4-layers/identity/contracts`, and directory adapters are tested with `@nuxt4-layers/identity/conformance`.
+
+Schedule `runIdentityMaintenance()` and `relayIdentityOutbox()` with any scheduler; see `playground/server/tasks/identity/maintenance.ts`.
 
 ## Development
 

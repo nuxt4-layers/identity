@@ -84,8 +84,12 @@ export const identitySchema = z.strictObject({
   deadlineAt: instantSchema.nullable(),
   version: versionSchema,
 }).superRefine((identity, context) => {
-  if ((identity.kind === 'person') !== (identity.personalGroupId !== null)) {
-    context.addIssue({ code: 'custom', path: ['personalGroupId'], message: 'A person has exactly one personal group; other kinds have none' })
+  // A person's personal group is created on confirmation, so a `pending`
+  // person, or one closed without ever being confirmed, has none yet.
+  const unconfirmed = identity.state === 'pending' || (identity.state === 'closed' && identity.personalGroupId === null)
+  const needsGroup = identity.kind === 'person' && !unconfirmed
+  if (identity.kind !== 'person' ? identity.personalGroupId !== null : needsGroup !== (identity.personalGroupId !== null)) {
+    context.addIssue({ code: 'custom', path: ['personalGroupId'], message: 'A confirmed person has exactly one personal group; a pending person and other kinds have none' })
   }
   if ((identity.kind === 'service') !== (identity.ownerGroupId !== null)) {
     context.addIssue({ code: 'custom', path: ['ownerGroupId'], message: 'A service identity, and only a service identity, has an owner group' })
