@@ -5,6 +5,7 @@ import type {
   IdentityEventPublisher,
   IdentityPolicy,
   IdentityPolicyInput,
+  IdentitySubjectResolver,
 } from '../../contracts'
 import { IdentityCompositionError, resolveIdentityPolicy } from '../../contracts'
 
@@ -22,6 +23,7 @@ let accessDecision: IdentityAccessDecision | null = null
 let approvalPolicy: IdentityApprovalPolicy | null = null
 let eventPublisher: IdentityEventPublisher | null = null
 let policy: IdentityPolicy | null = null
+let subjectResolver: IdentitySubjectResolver | null = null
 
 export function provideIdentityDatabase(next: IdentityDatabase): void {
   if (next?.dialect !== 'postgres' || typeof next.pool?.query !== 'function') {
@@ -55,6 +57,18 @@ export function provideIdentityEventPublisher(next: IdentityEventPublisher): voi
   eventPublisher = next
 }
 
+/**
+ * Supplies who is asking, for the layer's HTTP endpoints: the host adapts
+ * Authentication's `getAuthenticatedPrincipal(event)`. Without it, every
+ * endpoint fails closed.
+ */
+export function provideIdentitySubjectResolver(next: IdentitySubjectResolver): void {
+  if (typeof next?.resolve !== 'function') {
+    throw new TypeError('provideIdentitySubjectResolver expects an object with a resolve(event) function.')
+  }
+  subjectResolver = next
+}
+
 /** Validates and stores the host's policy. Invalid policy, or a loosening without a risk treatment, throws at startup. */
 export function provideIdentityPolicy(input: IdentityPolicyInput): void {
   policy = resolveIdentityPolicy(input)
@@ -80,6 +94,11 @@ export function useIdentityEventPublisher(): IdentityEventPublisher {
   return eventPublisher
 }
 
+export function useIdentitySubjectResolver(): IdentitySubjectResolver {
+  if (!subjectResolver) throw new IdentityCompositionError('IdentitySubjectResolver')
+  return subjectResolver
+}
+
 /** The effective policy: host overrides when supplied, otherwise the secure defaults. */
 export function useIdentityPolicy(): IdentityPolicy {
   if (!policy) policy = resolveIdentityPolicy()
@@ -93,4 +112,5 @@ export function clearIdentityComposition(): void {
   approvalPolicy = null
   eventPublisher = null
   policy = null
+  subjectResolver = null
 }

@@ -47,6 +47,10 @@
       "optional": false
     },
     {
+      "port": "IdentitySubjectResolver",
+      "optional": true
+    },
+    {
       "port": "IdentityPolicy",
       "optional": true
     }

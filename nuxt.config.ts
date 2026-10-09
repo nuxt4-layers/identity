@@ -6,4 +6,14 @@
  */
 export default defineNuxtConfig({
   compatibilityDate: '2026-06-30',
+  runtimeConfig: {
+    identity: {
+      /**
+       * The host's public origin (`NUXT_IDENTITY_BASE_URL`). State-changing
+       * `/api/identity/*` requests must come from it; without it they are
+       * all refused.
+       */
+      baseUrl: '',
+    },
+  },
 })

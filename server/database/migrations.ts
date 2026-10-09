@@ -2065,6 +2065,80 @@ grant execute on function
 to {{runtime}};
 `,
   },
+  {
+    id: '0006_administration_reads',
+    sql: `
+-- Reads for the administration surface (SECURITY DEFINER; granted) ------------
+-- Each returns exactly an answer the layer parses with the contract before
+-- it leaves; the layer authorises the caller first.
+
+create function {{schema}}.membership_json(m {{schema}}.membership) returns jsonb language sql stable as $$
+  select jsonb_build_object(
+    'membershipId', m.membership_id, 'identityId', m.identity_id, 'groupId', m.group_id, 'tenantId', m.tenant_id,
+    'kind', m.kind, 'state', m.state, 'owner', m.owner, 'foundingOwner', m.founding_owner,
+    'startsAt', {{schema}}.iso(m.starts_at), 'endsAt', {{schema}}.iso(m.ends_at), 'endedAt', {{schema}}.iso(m.ended_at),
+    'endReason', m.end_reason, 'reasonCode', m.reason_code, 'createdAt', {{schema}}.iso(m.created_at), 'version', m.version)
+$$;
+
+-- A page of a group's live memberships, with each identity's state for the effective status.
+create function {{schema}}.group_members(p_group uuid, p_after uuid, p_limit integer)
+returns jsonb language sql stable security definer set search_path = pg_catalog, pg_temp as $$
+  select coalesce(jsonb_agg(jsonb_build_object('membership', {{schema}}.membership_json(page.m), 'identityState', page.identity_state) order by (page.m).membership_id), '[]'::jsonb)
+  from (
+    select m, i.state as identity_state
+    from {{schema}}.membership m join {{schema}}.identity i on i.identity_id = m.identity_id
+      join {{schema}}."group" g on g.group_id = m.group_id
+    where m.group_id = p_group and g.kind = 'standard' and m.state <> 'ended' and (p_after is null or m.membership_id > p_after)
+    order by m.membership_id limit least(p_limit, 200)
+  ) page
+$$;
+
+-- Identity's part of a data-subject access request.
+create function {{schema}}.export_identity(p_identity uuid)
+returns jsonb language sql stable security definer set search_path = pg_catalog, pg_temp as $$
+  select jsonb_build_object(
+    'identity', jsonb_build_object(
+      'identityId', i.identity_id, 'kind', i.kind, 'state', i.state, 'previousState', i.previous_state, 'homeTenantId', i.home_tenant_id,
+      'personalGroupId', i.personal_group_id, 'ownerGroupId', i.owner_group_id, 'createdAt', {{schema}}.iso(i.created_at),
+      'stateChangedAt', {{schema}}.iso(i.state_changed_at), 'deadlineAt', {{schema}}.iso(i.deadline_at), 'version', i.version),
+    'externalIds', coalesce((select jsonb_agg(jsonb_build_object('tenantId', x.tenant_id, 'identityId', x.identity_id, 'externalId', x.external_id)
+      order by x.tenant_id) from {{schema}}.identity_external_id x where x.identity_id = i.identity_id), '[]'::jsonb),
+    'memberships', coalesce((select jsonb_agg({{schema}}.membership_json(m) order by m.created_at, m.membership_id)
+      from {{schema}}.membership m where m.identity_id = i.identity_id), '[]'::jsonb))
+  from {{schema}}.identity i where i.identity_id = p_identity
+$$;
+
+-- The structural part of SCIM resources (improvement register item 5).
+create function {{schema}}.scim_user(p_identity uuid, p_tenant uuid)
+returns jsonb language sql stable security definer set search_path = pg_catalog, pg_temp as $$
+  select jsonb_build_object('identityId', i.identity_id, 'state', i.state, 'createdAt', {{schema}}.iso(i.created_at),
+    'lastModified', {{schema}}.iso(i.state_changed_at), 'version', i.version,
+    'externalId', (select x.external_id from {{schema}}.identity_external_id x where x.identity_id = i.identity_id and x.tenant_id = p_tenant))
+  from {{schema}}.identity i where i.identity_id = p_identity and i.kind <> 'break-glass' and i.state <> 'pending'
+$$;
+
+create function {{schema}}.scim_group(p_group uuid, p_at timestamptz)
+returns jsonb language sql stable security definer set search_path = pg_catalog, pg_temp as $$
+  select jsonb_build_object('groupId', g.group_id, 'externalId', g.external_id, 'name', g.name, 'createdAt', {{schema}}.iso(g.created_at), 'version', g.version,
+    'members', coalesce((select jsonb_agg(m.identity_id order by m.identity_id)
+      from {{schema}}.membership m join {{schema}}.identity i on i.identity_id = m.identity_id
+      where m.group_id = g.group_id and m.state in ('active', 'paused') and i.state in ('active', 'paused')
+        and m.starts_at <= p_at and (m.ends_at is null or m.ends_at > p_at)), '[]'::jsonb))
+  from {{schema}}."group" g where g.group_id = p_group and g.kind = 'standard'
+$$;
+
+-- Privileges ----------------------------------------------------------------
+
+revoke all on all functions in schema {{schema}} from public;
+grant execute on function
+  {{schema}}.change_json({{schema}}.pending_change),
+  {{schema}}.group_members(uuid, uuid, integer),
+  {{schema}}.export_identity(uuid),
+  {{schema}}.scim_user(uuid, uuid),
+  {{schema}}.scim_group(uuid, timestamptz)
+to {{runtime}};
+`,
+  },
 ]
 
 const IDENTIFIER_PATTERN = /^[a-z_][a-z0-9_]{0,62}$/

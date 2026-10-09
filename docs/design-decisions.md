@@ -141,3 +141,18 @@ Taken while building 3c, within those decisions:
 - **The recovery hold is enforced in the database**: it marks the change when recorded, announces it (`approval.held`), and holds an approved change as `delayed` until the hold ends.
 - **Closure withdraws the person's pending work** at the end of the grace period: their pending changes are cancelled, invitations they sent or accepted revoked, and their join requests withdrawn, so nothing they started can take effect after they are gone.
 - **Pausing never asks permission and never fails for being the last owner**; it reports the groups it orphans, as the pausing process requires a warning.
+
+## 14. Phase 4 decisions
+
+Taken while building phase 4, within the decisions above, for the project owner's review:
+
+| Question | Decision |
+|---|---|
+| Must Authentication, Authorisation and the host change first? | No. Identity's endpoints call its own server functions over the ports the host supplies, and are tested with stand-ins for them. Composing the real members is phase 6, through iam-integration's reference adapters |
+| How do endpoints know who is asking, without importing Authentication? | A new port, `IdentitySubjectResolver`, which the host adapts from `getAuthenticatedPrincipal(event)`. The request event passes through opaquely, so the contract still names no HTTP framework |
+| An HTTP endpoint for creating invitations? | No. It would put the address through Identity, against §4. The host's own endpoint calls `invite` and hands token and address to its delivery |
+| An HTTP endpoint for closing break-glass reviews? | No. Whether the closer held the passkey is the host's attestation, which a browser cannot give |
+| SCIM and data-subject exports over HTTP? | No: server functions (`getIdentityScimStructure`, `exportIdentityData`) for the host's composed SCIM endpoint and iam-integration's data-subject process. Members do not call one another over HTTP |
+| Error detail | `IdentityErrorBody` gains `reason`, the rule as a code, for `conflict` and `validation-failed` only, so pages can say why without guessing; `forbidden` never carries one |
+| CSRF | As Authentication: the `Origin` or `Referer` must match the configured base URL, and without one configured every state-changing request is refused |
+| Runtime dependencies | Still zod alone: `h3` is Nuxt's, which the host already has; it is a development dependency here for tests and type-checking |

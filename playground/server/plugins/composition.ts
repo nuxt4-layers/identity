@@ -32,5 +32,14 @@ export default defineNitroPlugin(() => {
     },
   })
 
+  // A host adapts Authentication's getAuthenticatedPrincipal(event) here. The
+  // playground has no Authentication, so nobody is ever signed in and every
+  // /api/identity endpoint answers `unauthenticated`.
+  provideIdentitySubjectResolver({
+    async resolve() {
+      return null
+    },
+  })
+
   provideIdentityPolicy({ defaultHomeTenantId: null })
 })

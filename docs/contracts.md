@@ -284,6 +284,7 @@ and, when a group context applies, the group's **departure data policy**. Normal
 | `IdentityApprovalPolicy` | Authorisation | A permission's risk; whether an approver qualifies now; how many others qualify (for the route) | Yes |
 | `IdentityEventPublisher` | Host's outbox relay | Publishes each outbox event at least once | Yes |
 | `IdentityPolicy` | Host | Overrides within bounds (§15) | No |
+| `IdentitySubjectResolver` | Authentication, through the host | Who is signed in, for the HTTP endpoints (§19): the host adapts `getAuthenticatedPrincipal(event)` | For the endpoints; without it every endpoint answers `unavailable` |
 
 `IdentityAccessDecision` is an addition to iam-integration's architecture §3, which listed only the approval-policy port; see [design decisions](design-decisions.md) §8.
 
@@ -320,6 +321,8 @@ Written to Identity's transactional outbox in the same transaction as the change
 | `rate-limited` | 429 | Too many invitations or acceptance attempts |
 | `unavailable` | 503 | Database, Authorisation or another port failed. Fails closed |
 
+Over HTTP an error is an `IdentityErrorBody`: `{ code, messageKey }`, and for `conflict` and `validation-failed` only, `reason`, the rule as a code (`last-owner`, `self-grant`, `forbidden-character`), for a caller already entitled to learn it. `forbidden` never carries a reason.
+
 ## 13. Break-glass (ADR-0007)
 
 A `break-glass` identity has no personal group, memberships or roles, and signs in with a passkey only (`passkeyOnly` in the sign-in status). The operator provisions it with the migration role (`provisionIdentityBreakGlass`). `refuseBreakGlass` allows exactly three actions: suspend an identity, suspend a membership, and appoint an owner to an **orphaned** standard group, never itself. Each needs phishing-resistant aal2 within 15 minutes, takes effect at once, writes `break-glass.used` with a reason code, names the review in the events it causes (`breakGlassReviewId`), and opens a review (`breakGlassReviewSchema`) that only another person, who did not hold the passkey, can close (`mayCloseReview`, permission `identity.break-glass-reviews:close` in the platform group). Authentication rotates the passkey after each use. Reviews are never granted to the runtime role.
@@ -350,7 +353,7 @@ The policy also lists the `jurisdictions` and `dataRegions` the host supports, t
 
 ## 16. SCIM
 
-Identity supplies the structural part of SCIM 2.0 resources (improvement register item 5): `id`, `externalId` (per tenant for identities), `active` (true for `active` and `paused`), a group's `displayName` and `members`, and `meta` with a weak ETag from the aggregate version. `userName` comes from Authentication and `name` and `emails` from Profile; a SCIM endpoint composed by the host merges them.
+Identity supplies the structural part of SCIM 2.0 resources (improvement register item 5): `id`, `externalId` (per tenant for identities), `active` (true for `active` and `paused`), a group's `displayName` and `members`, and `meta` with a weak ETag from the aggregate version. `userName` comes from Authentication and `name` and `emails` from Profile; a SCIM endpoint composed by the host merges them. Identity supplies them through the server function `getIdentityScimStructure()` (`user({ identityId, tenantId })`, `group({ groupId })`), not over HTTP: the composed endpoint is the host's (iam-integration), and members do not call one another over HTTP. Break-glass and pending identities have no SCIM resource; a group's `members` are those whose membership is in effect now, active or paused.
 
 ## 18. Server functions
 
@@ -370,12 +373,48 @@ The host calls these on the server; none is an HTTP route. Each uses the supplie
 | `recordIdentityCredentialRecovery({ identityId, recoveredAt, correlationId })` | Records Authentication's `authentication.credentials-recovered` for the recovery hold (§8). Returns whether the identity is known | `validation-failed`, `unavailable` |
 | `getIdentityBreakGlass()` | Break-glass (§13): `act` and `closeReview` | `validation-failed`, `forbidden`, `insufficient-assurance`, `conflict`, `unavailable` |
 | `provisionIdentityBreakGlass({ pool, schema?, homeTenantId, correlationId })` | The operator's provisioning of a break-glass identity, with the migration pool. Writes `identity.provisioned` (kind `break-glass`) | `validation-failed`, `unavailable` |
+| `getIdentityQueries()` | Reads for administration (§19): `self`, `group` (`identity.groups:view`), `members` (`identity.memberships:view`, 100 a page), `changes` (`identity.groups:view`) | `validation-failed`, `forbidden`, `insufficient-assurance`, `unavailable` |
+| `exportIdentityData({ identityId, correlationId })` | Identity's part of a data-subject access request (`identityExportSchema`): the identity, its external identifiers and every membership, ended ones included. Server-only, for the verified request in iam-integration's data-subject request process. Null when unknown | `validation-failed`, `unavailable` |
+| `getIdentityScimStructure()` | The structural part of SCIM users and groups (§16). Server-only | `validation-failed`, `unavailable` |
 | `runIdentityMaintenance()` | Closes `pending` identities past their confirmation window (`identity.provisioning-expired`), records memberships past their end date as `ended` (`expired`, `membership.ended`), expires changes nobody approved in time, applies changes whose published delay has ended, and expires invitations, acceptances unconfirmed after `approvalExpiryDays` and join requests, and closes identities at the end of their grace period (memberships end; their pending changes, invitations and join requests are withdrawn; `identity.closed`). Returns the counts | `unavailable` |
 | `provisionIdentityTenant({ pool, schema?, jurisdiction, dataRegion, externalId?, correlationId })` | The platform operator's tenant provisioning, with the **migration** pool; the runtime role cannot create tenants. The jurisdiction and region must be registered in the policy. Writes `tenant.created` | `validation-failed`, `unavailable` |
 | `bootstrapIdentityRootGroup({ pool, schema?, tenantId, name, firstOwnerId, correlationId })` | The operator's bootstrap of a tenant's first root group and founding owner (an active person), with the migration pool. Refused once the tenant has a root group: later ones are `group.create-root` changes. Writes `group.created` and `membership.added` with a null actor | `validation-failed`, `conflict`, `unavailable` |
 
-`IdentityError` carries the contract code; its message is for the server log only.
+`IdentityError` carries the contract code; its message is for the server log only, except that for `conflict` and `validation-failed` the HTTP endpoints pass the rule on as `reason` when it is a code (§12).
 
+
+## 19. Administration API
+
+The layer mounts these endpoints under `/api/identity` (`IDENTITY_API_PREFIX`). Each takes the subject only from the host's `IdentitySubjectResolver`, never from the request; parses JSON bodies with strict schemas; decides through the same server functions (§18), so every permission, approval, step-up and rule above applies; and answers errors as §12 describes. State-changing requests must carry an `Origin` (or `Referer`) matching `NUXT_IDENTITY_BASE_URL`; without one configured, all are refused. A client may send `x-correlation-id` (a UUID); otherwise the endpoint issues one.
+
+| Method and path | Does | Server function |
+|---|---|---|
+| `GET /me` | The signed-in identity's own view (`selfViewSchema`) | `getIdentityQueries().self` |
+| `POST /me/pause`, `POST /me/resume` | Pauses (after reauthentication) or resumes the identity | `getIdentityLifecycle()` |
+| `POST /me/closure`, `DELETE /me/closure` | Requests (`{ leaveGroupsOrphaned? }`) or cancels closure, after reauthentication | `getIdentityLifecycle()` |
+| `POST /groups` | Creates a child group (`{ parentGroupId, name }`); 201 | `getIdentityGovernance().createGroup` |
+| `GET /groups/:groupId`, `PATCH /groups/:groupId` | Shows (`groupViewSchema`) or renames (`{ name }`) a group | `getIdentityQueries().group`, `getIdentityGovernance().renameGroup` |
+| `GET /groups/:groupId/members?after=` | A page of live memberships with their effective status (`groupMembersPageSchema`) | `getIdentityQueries().members` |
+| `GET /groups/:groupId/changes` | Pending governance changes | `getIdentityQueries().changes` |
+| `GET /groups/:groupId/invitations`, `GET /groups/:groupId/join-requests` | The group's invitations and open join requests | `getIdentityJoining()` |
+| `POST /groups/:groupId/join` | Joins an open group, or asks to join | `getIdentityJoining().requestToJoin` |
+| `POST /memberships/:membershipId/pause`, `/resume`, `/leave` | The member's own actions | `getIdentityGovernance()` |
+| `POST /memberships/:membershipId/suspend`, `/remove` | An administrator's, with `{ reasonCode }` | `getIdentityGovernance().actOnMember` |
+| `POST /invitations/accept`, `POST /invitations/decline` | The token's holder (`{ token }`); always `INVITATION_ACKNOWLEDGEMENT` unless rate-limited | `getIdentityJoining()` |
+| `POST /invitations/:invitationId/revoke`, `/decision` | Revokes, or confirms or refuses who accepted (`{ decision }`) | `getIdentityJoining()` |
+| `POST /join-requests/:joinRequestId/withdraw`, `/decision` | Withdraws, or approves or refuses (`{ decision }`) | `getIdentityJoining()` |
+| `POST /changes` | Requests a governance change (`{ request }`); 201 | `getIdentityApprovals().request` |
+| `GET /changes/:changeId` | A pending change, to those who may see it | `getIdentityApprovals().getPendingChange` |
+| `POST /changes/:changeId/decision`, `/cancel`, `/objection` | Approves or rejects (`{ decision, changeDigest }`), cancels, objects | `getIdentityApprovals()` |
+| `POST /break-glass/actions` | A break-glass action (`{ action, targetId, reasonCode }`); 201 | `getIdentityBreakGlass().act` |
+
+Deliberately **not** endpoints, because they need something only the host has:
+
+- **Creating an invitation.** The address must never reach Identity (§7). The host's own endpoint calls `getIdentityJoining().invite` and hands token and address to its delivery.
+- **Closing a break-glass review.** The host attests whether the closer held the passkey.
+- **Operator procedures, credential recovery, data-subject exports, SCIM.** Server-only by design (§18).
+
+`useIdentity()` is the client side: one function per endpoint, using `useRequestFetch()`. It is for the user experience only and decides nothing.
 
 ## 17. Versioning
 
@@ -391,3 +430,4 @@ Changes before 1.0:
 | 3b | `provisioningReserveInputSchema` gains `invitationToken`; `joinRequestSchema`, `join-request.*` events and the `join-request` aggregate are added | No |
 | 3b | `INVITATION_ACKNOWLEDGEMENT` answers acceptance and declining only; creating an invitation returns its token | Clarification |
 | 3c | `group.appoint-owner` is requestable; route `platform-operator`; approval decision `object`; `group.recovered` and `approval.held` events; `REAUTHENTICATION_MAX_AGE_SECONDS` | No |
+| 4 | `IdentitySubjectResolver` port; administration schemas (`selfViewSchema`, `groupViewSchema`, `groupMembersPageSchema`, `identityExportSchema`); `IdentityErrorBody.reason` | No |
