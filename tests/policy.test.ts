@@ -14,6 +14,7 @@ describe('Identity policy', () => {
       invitationExpiryDays: 14,
       guestTermDays: 90,
       maxHierarchyDepth: 10,
+      platformGroupId: null,
       riskTreatment: null,
     })
     expect(loosenedSettings(DEFAULT_IDENTITY_POLICY)).toEqual([])

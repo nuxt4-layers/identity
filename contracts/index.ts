@@ -124,19 +124,36 @@ export type { IdentityPermissionDefinition, IdentityPermissionName, IdentityRisk
 export { IDENTITY_PERMISSIONS, IDENTITY_RISK_LEVELS, identityPermissionRisk } from '../shared/permissions'
 
 // Governance approvals
-export type { ApprovalRefusal, ApprovalRequirement, ApprovalRoute, GovernanceChangeType, PendingChange, RequestRefusal, StepUpRequirement } from '../shared/approvals'
+export type {
+  ApprovalRefusal,
+  ApprovalRequirement,
+  ApprovalRoute,
+  GovernanceChangeType,
+  GovernanceRequest,
+  GovernanceTarget,
+  PendingChange,
+  PendingChangeState,
+  RequestRefusal,
+  RequestableChangeType,
+  StepUpRequirement,
+} from '../shared/approvals'
 export {
   APPROVAL_REFUSALS,
   APPROVAL_ROUTES,
   GOVERNANCE_CHANGES,
   GOVERNANCE_CHANGE_TYPES,
+  GOVERNANCE_TARGETS,
   PENDING_CHANGE_STATES,
+  REQUESTABLE_CHANGE_TYPES,
   REQUEST_REFUSALS,
   STEP_UP_REQUIREMENTS,
   approvalRecordSchema,
   approvalRequirement,
   assuranceRecordSchema,
   chooseRoute,
+  governanceRequestSchema,
+  governanceTargetSchema,
+  justificationSchema,
   meetsStepUp,
   pendingChangeSchema,
   refuseApproval,

@@ -180,6 +180,36 @@ Identity owns pending **governance** changes; Authorisation owns pending role an
 7. **Personal-group sovereignty.** In their own personal group a person needs **no approver**, including to share what it owns with others (sharing itself is an Authorisation grant, under the same rule), but must still **step up** to the risk level's assurance, which protects them if a session is stolen.
 8. **Recovery hold.** After credential recovery, `critical` governance changes the recovered person requests are held for `recoveryHoldHours` (72) and announced to their groups' co-owners.
 
+### 8.1 Requesting a change
+
+A requester submits a `governanceRequestSchema`: the change `type`, its `target` (`GOVERNANCE_TARGETS`) and a `justification`. `group.appoint-owner` belongs to orphaned-group recovery and is not requested this way.
+
+| Change | Target | Decided in | Beneficiary |
+|---|---|---|---|
+| `group.create-root` | tenant, safe name, first owner | the platform group | the first owner |
+| `group.reparent` | group, new parent (same tenant; the requester needs the permission on both) | the group | none |
+| `group.archive` | group (refused while a child is not archived, or a service identity it owns is active; ends memberships when `onArchive` is `end-memberships`) | the group | none |
+| `group.change-settings` | group, every setting except `approvals` | the group | none |
+| `group.change-approvals` | group, `approvals` (never below the floor) | the group | none |
+| `group.add-owner` | an active member's membership (never a guest) | the group | the member |
+| `group.remove-owner`, `group.suspend-owner` | an owner's membership (never the last active owner; suspending oneself is refused) | the group | the owner |
+| `membership.reinstate` | a suspended membership | the group | the member |
+| `membership.schedule` | a membership, new `startsAt` and `endsAt` (a guest's end within the group's guest term and the policy's) | the group | the member |
+| `identity.suspend`, `identity.reinstate` | a person or service identity (never oneself) | the platform group | the identity |
+| `service-identity.create` | the owning group | the group | none |
+
+The order of checks keeps errors coarse (§12): the target is located (unknown → `forbidden`), the requester authorised through the access-decision port on the group that decides (refused → `forbidden`), and only then are rules reported (`conflict`): self-grant, a rule about the target, a missing reference (`validation-failed`). The risk is the higher of Identity's (§9) and the host catalogue's; the requester must meet its step-up (`insufficient-assurance`). Only an active person requests or approves.
+
+The **route** is chosen when the change is recorded: `none` (it applies at once, or nothing is recorded); `approvers` when enough principals other than the requester and the beneficiary qualify in the group; otherwise one owner of the **parent group**, then one owner of the **tenant's root group**, other than requester and beneficiary; otherwise a **published delay**. A change awaiting an approver expires after `approvalExpiryDays`. Approval requirements raised to 2 apply to the `approvers` route; the owner fallbacks ask for one owner.
+
+`request`, `decide`, `cancel` and `getPendingChange` (§18) return the pending change. `decide` takes the digest of the change the approver was shown. A change is visible to its requester, its beneficiary and anyone who may decide it; to anyone else it is `forbidden`.
+
+### 8.2 What the database holds as well
+
+Pending changes are recorded, decided, cancelled and applied only through SECURITY DEFINER functions; the runtime role may read them, under row-level security, and nothing else. Those functions check again what the database can know, whatever the layer sends: the risk is never below Identity's declared risk; the requirement never below the group's; no self-grant; a justification and, where required, a reference; a published delay of at least 24 hours (`high`) or 72 hours (`critical`); an approver who is an active person, neither requester nor beneficiary, not deciding twice, and, for the owner fallbacks, an owner now. The digest is computed by the database over everything the change will do and checked again before it applies, so an altered record cannot be applied.
+
+When a change applies, every rule is checked again: the group is still active, the membership has not ended, the last owner stays, the hierarchy has no cycle and is within `maxHierarchyDepth` including the moved group's descendants, the guest term holds. If one no longer holds, the change is `rejected` and `approval.decided` says so. Every event the change causes carries the change's correlation identifier and, where the payload has one, its `changeId`.
+
 ## 9. Permissions
 
 Identity's permissions follow Authorisation's grammar (`<resource>:<action>`). The host adds `IDENTITY_PERMISSIONS` to Authorisation's catalogue.
@@ -296,7 +326,7 @@ A `break-glass` identity has no personal group, memberships or roles, and signs 
 | `maxHierarchyDepth` | 10 | 1–32 | shorter |
 | `invitationsPerInviterPerHour`, `invitationsPerGroupPerDay`, `acceptanceAttemptsPerHour` | 50, 200, 20 | see `IDENTITY_POLICY_BOUNDS` | shorter |
 
-The policy also lists the `jurisdictions` and `dataRegions` the host supports and the `defaultHomeTenantId`.
+The policy also lists the `jurisdictions` and `dataRegions` the host supports, the `defaultHomeTenantId`, and the `platformGroupId`: the standard group whose owners and qualifying members are the platform's operators, where root groups and identity suspension are decided. With none, those changes are refused.
 
 ## 16. SCIM
 
@@ -314,13 +344,23 @@ The host calls these on the server; none is an HTTP route. Each uses the supplie
 | `relayIdentityOutbox({ limit? })` | Publishes up to `limit` (default 100) outbox events in order, at least once. Returns `{ published, failed }` | `unavailable` |
 | `getIdentityDisclosureContext()` | The disclosure-context port (§10.3), for the host's adapter to Profile | `validation-failed`, `unavailable` |
 | `getIdentityGovernance()` | Changes that need no second approver: `createGroup` (child group, `identity.groups:create`; the creator becomes founding owner), `renameGroup` (`identity.groups:rename`), `pauseMembership`, `resumeMembership` and `leaveGroup` (the member's own), and `actOnMember` (`remove` or `suspend` a member who is not an owner, with a reason code). Each takes the authenticated `subject` and a `correlationId` | `validation-failed` (malformed input, unsafe name), `forbidden` (unknown target, or refused by Authorisation), `insufficient-assurance`, `conflict` (last owner, personal group, confusable sibling name, depth, owner needing approval), `unavailable` |
-| `runIdentityMaintenance()` | Closes `pending` identities past their confirmation window (`identity.provisioning-expired`) and records memberships past their end date as `ended` (`expired`, `membership.ended`) | `unavailable` |
-| `provisionIdentityTenant({ jurisdiction, dataRegion, externalId?, correlationId })` | The platform operator's tenant provisioning; the jurisdiction and region must be registered in the policy. Writes `tenant.created` | `validation-failed`, `unavailable` |
+| `getIdentityApprovals()` | Governance changes that need approval (§8): `request({ subject, request, correlationId })`, `decide({ subject, changeId, changeDigest, decision, correlationId })`, `cancel({ subject, changeId, correlationId })` (the requester only) and `getPendingChange({ subject, changeId })`. Needs the access-decision and approval-policy ports | `validation-failed`, `forbidden`, `insufficient-assurance`, `conflict` (a rule, `self-grant`, not pending, a different digest, already decided), `unavailable` (including a permission missing from the host's catalogue) |
+| `runIdentityMaintenance()` | Closes `pending` identities past their confirmation window (`identity.provisioning-expired`), records memberships past their end date as `ended` (`expired`, `membership.ended`), expires changes nobody approved in time, and applies changes whose published delay has ended. Returns the counts | `unavailable` |
+| `provisionIdentityTenant({ pool, schema?, jurisdiction, dataRegion, externalId?, correlationId })` | The platform operator's tenant provisioning, with the **migration** pool; the runtime role cannot create tenants. The jurisdiction and region must be registered in the policy. Writes `tenant.created` | `validation-failed`, `unavailable` |
+| `bootstrapIdentityRootGroup({ pool, schema?, tenantId, name, firstOwnerId, correlationId })` | The operator's bootstrap of a tenant's first root group and founding owner (an active person), with the migration pool. Refused once the tenant has a root group: later ones are `group.create-root` changes. Writes `group.created` and `membership.added` with a null actor | `validation-failed`, `conflict`, `unavailable` |
 
 `IdentityError` carries the contract code; its message is for the server log only.
 
-Root groups, owners, reparenting, archiving, settings, membership dates and reinstatement need the approvals of phase 3 and are not yet available.
+Invitations, join requests, the identity lifecycle (pause, resume, closure), orphaned-group recovery, the recovery hold and break-glass actions follow in phases 3b and 3c.
 
 ## 17. Versioning
 
 This is contract version 1, provided by package 0.1. Before 1.0, breaking changes are listed here and in the release notes. Reserved for later versions: further `pausing` values (`notice`, `approval`), identity-provider group-claim mapping (improvement register item 18), and the tenancy module's extraction.
+
+Changes before 1.0:
+
+| Phase | Change | Breaking |
+|---|---|---|
+| 3a | `pendingChangeSchema` gains `target`, `createdId` and `decidedAt`, and its target must match its type | For anyone constructing pending changes; readers gain fields |
+| 3a | `IdentityPolicy` gains `platformGroupId` (default null) | No |
+| 3a | `provisionIdentityTenant` takes the migration `pool`; the runtime role can no longer create tenants | Yes, for hosts that called it |

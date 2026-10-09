@@ -16,6 +16,7 @@ requireDatabaseInCi()
 describe.skipIf(!hasDatabase)('provisioning, outbox and maintenance on PostgreSQL', () => {
   let test: TestDatabase
   let db: Database
+  let operator: Database
   let tenantId: string
   let now = new Date('2026-10-09T12:00:00.000Z')
   const clock: Clock = { now: () => now }
@@ -31,7 +32,8 @@ describe.skipIf(!hasDatabase)('provisioning, outbox and maintenance on PostgreSQ
   beforeAll(async () => {
     test = await createTestDatabase()
     db = database({ dialect: 'postgres', pool: test.runtime, schema: test.schema })
-    tenantId = (await provisionTenant(db, resolveIdentityPolicy(), { jurisdiction: 'uk-gdpr', dataRegion: 'uk', correlationId: CORRELATION_ID }, clock)).tenantId
+    operator = database({ dialect: 'postgres', pool: test.admin, schema: test.schema })
+    tenantId = (await provisionTenant(operator, resolveIdentityPolicy(), { jurisdiction: 'uk-gdpr', dataRegion: 'uk', correlationId: CORRELATION_ID }, clock)).tenantId
   })
 
   afterAll(async () => {
@@ -39,7 +41,7 @@ describe.skipIf(!hasDatabase)('provisioning, outbox and maintenance on PostgreSQ
   })
 
   it('provisions a tenant only in a registered jurisdiction and region, and announces it', async () => {
-    await expect(provisionTenant(db, resolveIdentityPolicy(), { jurisdiction: 'us-ccpa', dataRegion: 'uk', correlationId: CORRELATION_ID }, clock)).rejects.toMatchObject({ code: 'validation-failed' })
+    await expect(provisionTenant(operator, resolveIdentityPolicy(), { jurisdiction: 'us-ccpa', dataRegion: 'uk', correlationId: CORRELATION_ID }, clock)).rejects.toMatchObject({ code: 'validation-failed' })
     const events = await drain()
     expect(events.map(event => event.type)).toEqual(['tenant.created'])
     expect(events[0]!.data).toEqual({ tenantId, jurisdiction: 'uk-gdpr', dataRegion: 'uk' })

@@ -18,6 +18,7 @@ requireDatabaseInCi()
 describe.skipIf(!hasDatabase)('groups, memberships and disclosure on PostgreSQL', () => {
   let test: TestDatabase
   let db: Database
+  let operator: Database
   let tenantA: string
   let tenantB: string
   let root: string
@@ -63,8 +64,9 @@ describe.skipIf(!hasDatabase)('groups, memberships and disclosure on PostgreSQL'
   beforeAll(async () => {
     test = await createTestDatabase()
     db = database({ dialect: 'postgres', pool: test.runtime, schema: test.schema })
-    tenantA = (await provisionTenant(db, resolveIdentityPolicy(), { jurisdiction: 'uk-gdpr', dataRegion: 'uk', correlationId: CORRELATION_ID }, clock)).tenantId
-    tenantB = (await provisionTenant(db, resolveIdentityPolicy(), { jurisdiction: 'uk-gdpr', dataRegion: 'uk', correlationId: CORRELATION_ID }, clock)).tenantId
+    operator = database({ dialect: 'postgres', pool: test.admin, schema: test.schema })
+    tenantA = (await provisionTenant(operator, resolveIdentityPolicy(), { jurisdiction: 'uk-gdpr', dataRegion: 'uk', correlationId: CORRELATION_ID }, clock)).tenantId
+    tenantB = (await provisionTenant(operator, resolveIdentityPolicy(), { jurisdiction: 'uk-gdpr', dataRegion: 'uk', correlationId: CORRELATION_ID }, clock)).tenantId
     // Root groups arrive with the approvals of phase 3; seed one per tenant.
     root = uuidv7()
     await seed(test.admin, [[`insert into identity."group" values ($1, $2, 'standard', null, 'Company', null, 'active', '{}'::jsonb, now(), 1, 'company')`, [root, tenantA]]])

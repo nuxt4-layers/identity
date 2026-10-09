@@ -14,7 +14,7 @@ A Nuxt 4 foundation layer that answers one question for the rest of the platform
 
 Part of the `nuxt4-layers` Identity and Access Management (IAM) suite, with [`authentication`](https://github.com/nuxt4-layers/authentication), [`profile`](https://github.com/nuxt4-layers/profile), [`authorisation`](https://github.com/nuxt4-layers/authorisation) and [`iam-integration`](https://github.com/nuxt4-layers/iam-integration).
 
-**Status:** phase 2 of 6. The contract, conformance suite, composition ports, PostgreSQL storage with row-level security, the outbox, provisioning, the directory and disclosure-context ports, child groups and membership changes are in place; governance with approvals and administration follow (see [docs/roadmap.md](docs/roadmap.md)).
+**Status:** phase 3 of 6. The contract, conformance suite, composition ports, PostgreSQL storage with row-level security, the outbox, provisioning, the directory and disclosure-context ports, child groups, membership changes and the governance approvals engine are in place; invitations, the identity lifecycle, recovery and administration follow (see [docs/roadmap.md](docs/roadmap.md)).
 
 ## Owns
 
@@ -73,8 +73,11 @@ export default defineNitroPlugin(async () => {
   provideIdentityAccessDecision(authorisationDecisionAdapter)
   provideIdentityApprovalPolicy(authorisationApprovalAdapter)
   provideIdentityEventPublisher(outboxRelay)
+  provideIdentityPolicy({ platformGroupId })
 })
 ```
+
+The operator provisions tenants and each tenant's first root group with the migration pool, from a server-only procedure: `provisionIdentityTenant({ pool: migrationPool, ... })` and `bootstrapIdentityRootGroup({ pool: migrationPool, ... })`. Every other governance change goes through `getIdentityApprovals()`.
 
 Other members import types only from `@nuxt4-layers/identity/contracts`, and directory adapters are tested with `@nuxt4-layers/identity/conformance`.
 

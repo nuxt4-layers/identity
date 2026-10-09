@@ -10,7 +10,9 @@ import {
 } from './identifiers'
 import { IDENTITY_RISK_LEVELS } from './permissions'
 import type { IdentityPermissionName, IdentityRiskLevel } from './permissions'
+import { groupSettingsSchema } from './group'
 import type { RequiredApprovers } from './group'
+import { storedSafeNameSchema } from './safe-names'
 
 /**
  * Governance approvals (docs/contracts.md §8), following iam-integration's
@@ -66,6 +68,80 @@ export const APPROVAL_ROUTES = ['approvers', 'parent-owner', 'tenant-owner', 'pu
 export type ApprovalRoute = typeof APPROVAL_ROUTES[number]
 
 export const PENDING_CHANGE_STATES = ['awaiting-approval', 'delayed', 'applied', 'rejected', 'expired', 'cancelled'] as const
+export type PendingChangeState = typeof PENDING_CHANGE_STATES[number]
+
+// ---------------------------------------------------------------------------
+// What each change acts on
+// ---------------------------------------------------------------------------
+
+const id = identifierSchema
+const onMembership = z.strictObject({ membershipId: id })
+const onIdentity = z.strictObject({ identityId: id })
+
+/**
+ * The target of each change: what a requester submits, and what approvers
+ * see and approve (its digest). `group.appoint-owner` belongs to orphaned-
+ * group recovery and is not requested through this schema.
+ */
+export const GOVERNANCE_TARGETS = {
+  /** A root group in `tenantId`, named `name`, with `firstOwnerId` as its founding owner. */
+  'group.create-root': z.strictObject({ tenantId: id, name: storedSafeNameSchema, firstOwnerId: id }),
+  /** Moves `groupId` under `parentGroupId` in the same tenant. */
+  'group.reparent': z.strictObject({ groupId: id, parentGroupId: id }),
+  'group.archive': z.strictObject({ groupId: id }),
+  /** Every setting except `approvals`, which only `group.change-approvals` changes. */
+  'group.change-settings': z.strictObject({ groupId: id, settings: groupSettingsSchema.omit({ approvals: true }) }),
+  'group.change-approvals': z.strictObject({ groupId: id, approvals: groupSettingsSchema.shape.approvals }),
+  /** Makes an active member (never a guest) an owner. */
+  'group.add-owner': onMembership,
+  /** Demotes an owner to a member. Never the last active owner. */
+  'group.remove-owner': onMembership,
+  /** Suspends an owner's membership, with the justification's reason code. Never the last active owner. */
+  'group.suspend-owner': onMembership,
+  'membership.reinstate': onMembership,
+  /** Sets a membership's dates; renews a guest within the group's guest term. */
+  'membership.schedule': z.strictObject({ membershipId: id, startsAt: instantSchema, endsAt: instantSchema.nullable() }),
+  /** Platform-wide reasons only; decided in the host's platform group. */
+  'identity.suspend': onIdentity,
+  'identity.reinstate': onIdentity,
+  /** A service identity owned by `groupId`. */
+  'service-identity.create': z.strictObject({ groupId: id }),
+} as const satisfies Partial<Record<GovernanceChangeType, z.ZodType>>
+
+export type RequestableChangeType = keyof typeof GOVERNANCE_TARGETS
+export const REQUESTABLE_CHANGE_TYPES = Object.keys(GOVERNANCE_TARGETS) as RequestableChangeType[]
+export type GovernanceTarget<T extends RequestableChangeType = RequestableChangeType> = z.infer<typeof GOVERNANCE_TARGETS[T]>
+
+export const justificationSchema = z.strictObject({
+  reasonCode: reasonCodeSchema,
+  reference: justificationReferenceSchema.nullable(),
+})
+
+function requestSchema<T extends RequestableChangeType>(type: T) {
+  return z.strictObject({ type: z.literal(type), target: GOVERNANCE_TARGETS[type], justification: justificationSchema })
+}
+
+/** A governance change as a requester submits it. */
+export const governanceRequestSchema = z.discriminatedUnion(
+  'type',
+  REQUESTABLE_CHANGE_TYPES.map(type => requestSchema(type)) as unknown as [ReturnType<typeof requestSchema>, ...ReturnType<typeof requestSchema>[]],
+)
+
+export type GovernanceRequest = {
+  [T in RequestableChangeType]: { type: T, target: GovernanceTarget<T>, justification: z.infer<typeof justificationSchema> }
+}[RequestableChangeType]
+
+/** The target of any change, recorded on the pending change. */
+export const governanceTargetSchema = z.union([
+  GOVERNANCE_TARGETS['group.create-root'],
+  GOVERNANCE_TARGETS['group.reparent'],
+  GOVERNANCE_TARGETS['group.archive'],
+  GOVERNANCE_TARGETS['group.change-settings'],
+  GOVERNANCE_TARGETS['group.change-approvals'],
+  onMembership,
+  GOVERNANCE_TARGETS['membership.schedule'],
+  onIdentity,
+])
 
 export const assuranceRecordSchema = z.strictObject({
   level: z.enum(['aal1', 'aal2']),
@@ -91,14 +167,20 @@ export const pendingChangeSchema = z.strictObject({
   /** The identity the change confers on or acts against. Null when it concerns only a group. */
   beneficiaryId: identifierSchema.nullable(),
   risk: z.enum(IDENTITY_RISK_LEVELS),
-  justification: z.strictObject({
-    reasonCode: reasonCodeSchema,
-    reference: justificationReferenceSchema.nullable(),
-  }),
+  justification: justificationSchema,
+  /** What the change acts on (`GOVERNANCE_TARGETS`). */
+  target: governanceTargetSchema,
+  /** For a change that creates a group or a service identity: its identifier, issued when requested. */
+  createdId: identifierSchema.nullable(),
   requiredApprovals: z.number().int().min(0).max(2),
   route: z.enum(APPROVAL_ROUTES),
   approvals: z.array(approvalRecordSchema).max(4),
-  /** SHA-256 of the canonical form of the change; approvals must match it. */
+  /**
+   * SHA-256 of the change as recorded (type, tenant, group, requester,
+   * beneficiary, risk, justification, target, created identifier), computed
+   * by the database when the change is recorded and again before it is
+   * applied. Approvals must match it.
+   */
   changeDigest: sha256DigestSchema,
   /** For `published-delay`: when it applies. */
   delayEndsAt: instantSchema.nullable(),
@@ -107,7 +189,14 @@ export const pendingChangeSchema = z.strictObject({
   state: z.enum(PENDING_CHANGE_STATES),
   correlationId: correlationIdSchema,
   createdAt: instantSchema,
+  /** When it was applied, rejected, expired or cancelled. */
+  decidedAt: instantSchema.nullable(),
   version: versionSchema,
+}).superRefine((change, context) => {
+  const target = (GOVERNANCE_TARGETS as Partial<Record<GovernanceChangeType, z.ZodType>>)[change.type]
+  if (!target || !target.safeParse(change.target).success) {
+    context.addIssue({ code: 'custom', path: ['target'], message: 'The target does not match the change type' })
+  }
 })
 
 export type PendingChange = z.infer<typeof pendingChangeSchema>

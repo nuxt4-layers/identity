@@ -41,6 +41,28 @@ const DOMAIN_ERRORS: Readonly<Record<string, IdentityError['code']>> = {
   'identity:unknown': 'forbidden',
   'identity:not-pending': 'conflict',
   'identity:expired': 'conflict',
+  // Governance approvals (phase 3a)
+  'identity:approval-refused': 'forbidden',
+  'identity:unknown-change': 'validation-failed',
+  'identity:justification-missing': 'validation-failed',
+  'identity:self-grant': 'conflict',
+  'identity:approval-floor': 'conflict',
+  'identity:change-differs': 'conflict',
+  'identity:changed-since-request': 'conflict',
+  'identity:owner-unavailable': 'conflict',
+  'identity:group-not-active': 'conflict',
+  'identity:active-children': 'conflict',
+  'identity:active-service-identities': 'conflict',
+  'identity:already-owner': 'conflict',
+  'identity:not-eligible': 'conflict',
+  'identity:not-owner': 'conflict',
+  'identity:last-owner': 'conflict',
+  'identity:already-suspended': 'conflict',
+  'identity:not-suspended': 'conflict',
+  'identity:not-suspendable': 'conflict',
+  'identity:membership-ended': 'conflict',
+  'identity:invalid-dates': 'conflict',
+  'identity:guest-term': 'conflict',
 }
 
 /** Maps a database error to a contract error. Unknown failures are `unavailable` and fail closed. */

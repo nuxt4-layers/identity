@@ -57,6 +57,13 @@ export interface IdentityPolicy extends IdentityPolicyPeriods {
   dataRegions: readonly string[]
   /** The home tenant for sign-ups that do not come through an invitation. Null: sign-up needs one supplied. */
   defaultHomeTenantId: string | null
+  /**
+   * The host's platform group: a standard group whose owners and qualifying
+   * members are the platform's operators. Platform-wide changes (root
+   * groups, suspending or reinstating an identity) are authorised and
+   * approved there. Null: those changes are refused.
+   */
+  platformGroupId: string | null
   /** Reference to the documented risk treatment for any loosening, or null. */
   riskTreatment: string | null
 }
@@ -70,6 +77,7 @@ export const DEFAULT_IDENTITY_POLICY: IdentityPolicy = Object.freeze({
   jurisdictions: Object.freeze(['uk-gdpr']),
   dataRegions: Object.freeze(['uk']),
   defaultHomeTenantId: null,
+  platformGroupId: null,
   riskTreatment: null,
 })
 
@@ -82,6 +90,7 @@ export const identityPolicyInputSchema = z.strictObject({
   jurisdictions: z.array(registryCodeSchema).min(1).max(64).optional(),
   dataRegions: z.array(registryCodeSchema).min(1).max(64).optional(),
   defaultHomeTenantId: identifierSchema.nullable().optional(),
+  platformGroupId: identifierSchema.nullable().optional(),
   riskTreatment: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._:/#-]{0,63}$/).nullable().optional(),
 })
 
