@@ -75,3 +75,14 @@ Observed in passing: Authentication passes `name: ''` to the engine at email sig
 - `docs/architecture.md` §2 to §4: the verified identifier decision; the access-decision port; the new events.
 - `docs/processes/*.md`: permission names in Authorisation's grammar.
 - `docs/roadmap.md`: decision 1 verified; Identity phase 1 in progress; the changes Authentication needs.
+
+## 11. Decisions after the round
+
+Decided by the project owner on 2026-10-09, after reviewing the questions left open:
+
+| Question | Decision |
+|---|---|
+| Authentication stores the name and picture a provider supplies at federated sign-up | **Authentication is never a source of profile data, nor of the workflows over it.** It stores no name or picture (the engine's fields stay empty) and blanks any stored before; it never serves or seeds profile attributes. Sign-in identifiers remain Authentication's (ADR-0006 §6). Importing a provider's claims into a profile, if ever wanted, is a Profile workflow in Profile's contract |
+| A forwarded invitation link admits someone else | A group setting, `joining.invitationAcceptance`, by membership kind: `immediate` or `confirm`. With `confirm`, an accepted unbound invitation waits for an administrator to confirm who accepted. Default `confirm` for guests, `immediate` for members. Every acceptance notifies the inviter (`invitation.accepted`) |
+| A group name could identify a person | Accepted with treatment: names stay out of events, logs and port answers; a valid correction or erasure request about a group name is met by a rename, through iam-integration's data-subject request process; administration pages advise against personal names |
+

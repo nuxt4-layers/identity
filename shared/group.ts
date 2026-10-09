@@ -10,6 +10,13 @@ import { storedSafeNameSchema } from './safe-names'
  * access (Group Model Definition §3, §6).
  */
 
+/**
+ * - `immediate` — accepting an invitation creates the membership at once.
+ * - `confirm` — it waits until an administrator confirms who accepted it,
+ *   so a forwarded link cannot admit someone else unnoticed.
+ */
+export const INVITATION_ACCEPTANCE_MODES = ['immediate', 'confirm'] as const
+
 /** `personal` — the unary group of one person. `standard` — every other group. */
 export const GROUP_KINDS = ['personal', 'standard'] as const
 export type GroupKind = typeof GROUP_KINDS[number]
@@ -89,6 +96,16 @@ export const groupSettingsSchema = z.strictObject({
     requests: z.boolean(),
     /** Anyone in the tenant may join without approval. Off by default. */
     open: z.boolean(),
+    /**
+     * Whether an accepted invitation takes effect at once or waits for an
+     * administrator to confirm who accepted it, by membership kind. Applies
+     * to unbound (bearer) invitations only: one bound to an existing identity
+     * can be accepted by nobody else.
+     */
+    invitationAcceptance: z.strictObject({
+      member: z.enum(INVITATION_ACCEPTANCE_MODES),
+      guest: z.enum(INVITATION_ACCEPTANCE_MODES),
+    }),
   }),
   pausing: z.enum(PAUSE_SETTINGS),
   guests: z.strictObject({
@@ -109,7 +126,7 @@ export const groupSettingsSchema = z.strictObject({
 export type GroupSettings = z.infer<typeof groupSettingsSchema>
 
 export const DEFAULT_GROUP_SETTINGS: GroupSettings = Object.freeze({
-  joining: { requests: true, open: false },
+  joining: { requests: true, open: false, invitationAcceptance: { member: 'immediate', guest: 'confirm' } },
   pausing: 'allowed',
   guests: { allowed: true, termDays: 90 },
   approvals: { required: { ...DEFAULT_REQUIRED_APPROVERS }, referenceRequired: false },

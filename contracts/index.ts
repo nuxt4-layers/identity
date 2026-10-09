@@ -82,6 +82,7 @@ export {
   GROUP_KINDS,
   GROUP_STATES,
   HISTORY_VISIBILITIES,
+  INVITATION_ACCEPTANCE_MODES,
   PAUSE_SETTINGS,
   departurePolicySchema,
   groupSchema,
@@ -106,8 +107,17 @@ export {
 } from '../shared/membership'
 
 // Invitations (improvement register item 20)
-export type { InvitationRecord, InvitationState } from '../shared/invitation'
-export { INVITATION_ACKNOWLEDGEMENT, INVITATION_STATES, INVITATION_TOKEN_BYTES, invitationSchema, invitationTokenSchema } from '../shared/invitation'
+export type { ConfirmationRefusal, InvitationRecord, InvitationState } from '../shared/invitation'
+export {
+  CONFIRMATION_REFUSALS,
+  INVITATION_ACKNOWLEDGEMENT,
+  INVITATION_STATES,
+  INVITATION_TOKEN_BYTES,
+  invitationRequiresConfirmation,
+  invitationSchema,
+  invitationTokenSchema,
+  refuseConfirmation,
+} from '../shared/invitation'
 
 // Permissions
 export type { IdentityPermissionDefinition, IdentityPermissionName, IdentityRiskLevel } from '../shared/permissions'
