@@ -4,6 +4,7 @@ import { groupSchema, lineageSchema } from './group'
 import { correlationIdSchema, identifierSchema, instantSchema } from './identifiers'
 import { identityExternalIdSchema, identitySchema } from './identity'
 import { storedSafeNameSchema } from './safe-names'
+import { effectiveSafetyPeriodsSchema, safetyPeriodsSchema } from './safety-periods'
 import { EFFECTIVE_STATUSES, membershipSchema } from './membership'
 import type { IdentitySubject } from './ports'
 
@@ -53,6 +54,13 @@ export const selfViewSchema = z.strictObject({
 export const groupViewSchema = z.strictObject({
   group: groupSchema,
   lineage: lineageSchema,
+  /** The group's own safety periods, and those in force for it (§21). */
+  safetyPeriods: z.strictObject({
+    own: safetyPeriodsSchema,
+    effective: effectiveSafetyPeriodsSchema,
+    /** Whether this is the host's platform group, whose periods are the platform's. */
+    isPlatformGroup: z.boolean(),
+  }),
 })
 
 /** A member of a group, with what the membership confers now. */

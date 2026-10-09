@@ -112,7 +112,7 @@ export function getIdentityBreakGlass(): BreakGlass {
  * through the access-decision port.
  */
 export function getIdentityQueries(): Queries {
-  return createQueries({ db: database(useIdentityDatabase()), access: useIdentityAccessDecision() })
+  return createQueries({ db: database(useIdentityDatabase()), access: useIdentityAccessDecision(), policy: useIdentityPolicy() })
 }
 
 /**

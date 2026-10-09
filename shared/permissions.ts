@@ -29,7 +29,7 @@ export const IDENTITY_PERMISSIONS = Object.freeze([
   { name: 'identity.groups:reparent', description: 'Move a group under another parent in the same tenant', risk: 'critical' },
   { name: 'identity.groups:archive', description: 'Archive a group', risk: 'high' },
   { name: 'identity.group-settings:manage', description: 'Change joining, guest, archive and departure data settings', risk: 'high' },
-  { name: 'identity.group-approvals:manage', description: 'Raise or restore a group\'s approval requirements', risk: 'critical' },
+  { name: 'identity.group-approvals:manage', description: 'Raise or restore a group\'s approval requirements, and change its safety periods', risk: 'critical' },
   { name: 'identity.group-owners:manage', description: 'Add, remove, suspend or demote an owner', risk: 'critical' },
   { name: 'identity.memberships:view', description: 'See a group\'s members and their states', risk: 'low' },
   { name: 'identity.invitations:manage', description: 'Invite to a group, or revoke an invitation', risk: 'medium' },

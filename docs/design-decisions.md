@@ -170,3 +170,20 @@ The project owner asked to use Theme Manager's current commit, `934d1bd` (0.2.1 
 | Inviting someone | Still the host's own form (§14): the pages list, confirm, refuse and revoke invitations, but never take an address |
 | Runtime dependencies | Still zod alone. The module uses `nuxt/kit` from the host's Nuxt; Theme Manager, Tailwind and Playwright are development dependencies, and Theme Manager is declared an optional capability: without it the pages are unstyled but work |
 | Installing Theme Manager | From GitHub at the pinned commit, as Authentication does. This environment cannot reach GitHub's archive host, so the lockfile's entry for it was written in the same form as Authentication's, and CI's frozen install verifies it |
+
+## 16. Decisions after phase 5
+
+Decided by the project owner on 2026-10-09, after reviewing the decisions in §13 to §15:
+
+| Question | Decision |
+|---|---|
+| The decisions taken while building phases 3 to 5 | Accepted as recorded: one owner on the fallback routes, the invitation token returned once to the inviter, recovery authority from Identity's records, the recovery hold, no endpoints for invitation creation or review closing, the subject-resolver port, Theme Manager as a development dependency, opaque labels in place of names, tokens in the fragment |
+| Fixed safety periods | Configurable while the platform runs (contract §21): the platform group's owners in either direction within the hard bounds, a root group's and a group's owners only safer; changing one is a `critical` change, and a less safe value waits out the old one |
+
+Taken while building it, within that decision:
+
+- **The tenant level is the root group.** A tenant may have several root groups; each root group's owners set periods for the groups under it, as the `tenant-owner` fallback already asks the owners of a group's root.
+- **The closure grace period is the platform's alone.** It belongs to the person, and a group lengthening it would delay their leaving and erasure.
+- **Periods live in their own column**, not in the group's settings, so that a settings change can never carry them, and the runtime role has no grant on it.
+- **Approval expiry here governs governance changes.** Invitation confirmation and join requests keep the deployment's `approvalExpiryDays`.
+- **The platform group and the host's values reach the database per transaction**, as the layer's trusted configuration; a change of periods records them in its digest so that it applies, perhaps days later, under the values it was requested with.

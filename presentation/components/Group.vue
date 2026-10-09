@@ -93,6 +93,7 @@ async function join() {
       <IdentityInvitations :group-id="groupId" />
       <IdentityJoinRequests :group-id="groupId" />
       <IdentityChanges :group-id="groupId" />
+      <IdentitySafetyPeriods :group-id="groupId" :periods="view!.safetyPeriods" :active="group.state === 'active'" @requested="notice = t('identity.safety.requested')" />
 
       <section v-if="group.state === 'active'" :class="identityClasses.section" aria-labelledby="identity-group-child">
         <h2 id="identity-group-child" :class="identityClasses.sectionTitle">{{ t('identity.group.childTitle') }}</h2>

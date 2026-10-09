@@ -1,6 +1,7 @@
 import type { IdentityPolicy, IdentitySubject } from '../../contracts'
 import { correlationIdSchema, IdentityError, identifierSchema, identitySubjectSchema, REAUTHENTICATION_MAX_AGE_SECONDS } from '../../contracts'
 import type { Database } from './database'
+import { platformPeriods } from './safety-periods'
 import type { Clock } from './provisioning'
 import { systemClock } from './provisioning'
 
@@ -87,13 +88,14 @@ export function createLifecycle({ db, policy, clock = systemClock }: LifecycleDe
 
     /**
      * Requests closure (after reauthentication). The identity closes after
-     * the policy's `closureGraceDays`. Refused (`conflict`, `last-owner`)
+     * the platform's `closureGraceDays` (§21), which no group sets. Refused (`conflict`, `last-owner`)
      * while the person is the last active owner of a group, unless
      * `leaveGroupsOrphaned` is true.
      */
     async requestClosure(input: { subject: IdentitySubject, leaveGroupsOrphaned?: boolean, correlationId: string }): Promise<{ state: 'closure-pending', closesAt: string }> {
       const { subject, correlationId, now } = prepare(input, true)
-      const closesAt = new Date(now.getTime() + policy.closureGraceDays * DAY)
+      const { closureGraceDays } = await platformPeriods(db, policy)
+      const closesAt = new Date(now.getTime() + closureGraceDays * DAY)
       try {
         await transition('request_closure', subject.principalId, [closesAt, input.leaveGroupsOrphaned === true, correlationId, now], correlationId, now)
       }

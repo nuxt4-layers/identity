@@ -44,7 +44,7 @@ const payloads = {
   'group.renamed': z.strictObject({ groupId: id }),
   'group.reparented': z.strictObject({ groupId: id, previousLineage: lineageSchema, lineage: lineageSchema, changeId: id }),
   'group.owners-changed': z.strictObject({ groupId: id, added: z.array(id).max(64), removed: z.array(id).max(64), changeId: id.nullable(), breakGlassReviewId: id.nullable() }),
-  'group.settings-changed': z.strictObject({ groupId: id, changed: z.array(z.enum(['joining', 'pausing', 'guests', 'approvals', 'onArchive', 'departure'])).min(1) }),
+  'group.settings-changed': z.strictObject({ groupId: id, changed: z.array(z.enum(['joining', 'pausing', 'guests', 'approvals', 'onArchive', 'departure', 'safetyPeriods'])).min(1) }),
   'group.orphaned': z.strictObject({ groupId: id }),
   'group.recovered': z.strictObject({ groupId: id, changeId: id.nullable(), breakGlassReviewId: id.nullable() }),
   'group.archived': z.strictObject({ groupId: id, changeId: id }),

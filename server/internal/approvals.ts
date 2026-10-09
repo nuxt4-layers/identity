@@ -1,5 +1,6 @@
 import type {
   ApprovalRoute,
+  EffectiveSafetyPeriods,
   GovernanceRequest,
   GroupDescription,
   GroupSettings,
@@ -32,10 +33,12 @@ import {
   pendingChangeSchema,
   refuseApproval,
   refuseRequest,
+  refuseSafetyPeriods,
   sha256DigestSchema,
   wouldCreateCycle,
 } from '../../contracts'
 import type { Database, QueryClient } from './database'
+import { hostSafetyPeriods, safetyLevels, safetyPeriodsFor, setSafetyContext } from './safety-periods'
 import type { Clock } from './provisioning'
 import { systemClock } from './provisioning'
 
@@ -283,6 +286,22 @@ export function createApprovals({ db, access, approvalPolicy, policy, clock = sy
           check: async () => (governing.state === 'active' ? null : 'group is not active'),
         }
       }
+      case 'group.change-safety-periods': {
+        const governing = await standardGroup(request.target.groupId)
+        const levels = await safetyLevels(db, policy, governing.groupId)
+        return {
+          governing,
+          alsoAuthoriseOn: [],
+          beneficiaryId: null,
+          createdId: null,
+          // Recorded with the change and in its digest, so that it applies, perhaps days later, under the same platform and host values.
+          internal: { basePeriods: levels.group, platformGroupId: policy.platformGroupId, hostPeriods: hostSafetyPeriods(policy) },
+          check: async () => {
+            if (governing.state !== 'active') return 'group is not active'
+            return refuseSafetyPeriods({ host: policy, levels, next: request.target.safetyPeriods, reference: request.justification.reference })
+          },
+        }
+      }
       case 'group.add-owner':
       case 'group.remove-owner':
       case 'group.suspend-owner':
@@ -379,10 +398,11 @@ export function createApprovals({ db, access, approvalPolicy, policy, clock = sy
     }, { tenantIds: [group.tenantId] })
   }
 
-  /** Records a change through `fn`, under the policy's recovery hold. */
-  async function record(fn: 'record_change' | 'record_recovery', payload: object, tenantId: string, subject: IdentitySubject, correlationId: string, now: Date): Promise<PendingChange> {
+  /** Records a change through `fn`, under the safety periods in force for its group, which the database checks again. */
+  async function record(fn: 'record_change' | 'record_recovery', payload: object, tenantId: string, periods: EffectiveSafetyPeriods, subject: IdentitySubject, correlationId: string, now: Date): Promise<PendingChange> {
     const { rows } = await db.transaction(async (client) => {
-      await client.query(`select set_config('identity.recovery_hold_hours', $1, true)`, [String(policy.recoveryHoldHours)])
+      await client.query(`select set_config('identity.recovery_hold_hours', $1, true)`, [String(periods.recoveryHoldHours)])
+      await setSafetyContext(client, policy)
       return client.query<{ result: unknown }>(`select ${db.schema}.${fn}($1::jsonb) as result`, [JSON.stringify(payload)])
     }, { tenantIds: [tenantId], actorId: subject.principalId, correlationId, at: now })
     return pendingChangeSchema.parse(rows[0]!.result)
@@ -420,17 +440,18 @@ export function createApprovals({ db, access, approvalPolicy, policy, clock = sy
       route = 'published-delay'
     }
     const delayed = route === 'published-delay'
+    const periods = await safetyPeriodsFor(db, policy, group.groupId)
     return record('record_recovery', {
       membershipId: facts.membershipId,
       requesterId: subject.principalId,
       reasonCode: request.justification.reasonCode,
       reference: request.justification.reference,
       route,
-      delayEndsAt: delayed ? new Date(now.getTime() + policy.orphanRecoveryDelayDays * 86_400_000).toISOString() : null,
-      expiresAt: delayed ? null : new Date(now.getTime() + policy.approvalExpiryDays * 86_400_000).toISOString(),
+      delayEndsAt: delayed ? new Date(now.getTime() + periods.orphanRecoveryDelayDays * 86_400_000).toISOString() : null,
+      expiresAt: delayed ? null : new Date(now.getTime() + periods.approvalExpiryDays * 86_400_000).toISOString(),
       correlationId,
       at: now.toISOString(),
-    }, group.tenantId, subject, correlationId, now)
+    }, group.tenantId, periods, subject, correlationId, now)
   }
 
   /** Whether `approverId` may decide `change` now, by its route. Asked of Authorisation with a strong read. */
@@ -505,6 +526,7 @@ export function createApprovals({ db, access, approvalPolicy, policy, clock = sy
       const requirement = approvalRequirement({ risk, inRequestersPersonalGroup: false, groupRequirement: settings.approvals.required })
       const route = await routeFor({ permission, governing: located.governing, approvers: requirement.approvers, requesterId: subject.principalId, beneficiaryId: located.beneficiaryId })
       const hours = (h: number) => new Date(now.getTime() + h * 3_600_000).toISOString()
+      const periods = await safetyPeriodsFor(db, policy, located.governing.groupId)
       const change = {
         type: request.type,
         groupId: located.governing.groupId,
@@ -518,12 +540,12 @@ export function createApprovals({ db, access, approvalPolicy, policy, clock = sy
         internal: located.internal,
         requiredApprovals: route === 'parent-owner' || route === 'tenant-owner' ? 1 : requirement.approvers,
         route,
-        delayEndsAt: route === 'published-delay' ? hours(risk === 'critical' ? policy.publishedDelayCriticalHours : policy.publishedDelayHighHours) : null,
-        expiresAt: ['approvers', 'parent-owner', 'tenant-owner'].includes(route) ? hours(policy.approvalExpiryDays * 24) : null,
+        delayEndsAt: route === 'published-delay' ? hours(risk === 'critical' ? periods.publishedDelayCriticalHours : periods.publishedDelayHighHours) : null,
+        expiresAt: ['approvers', 'parent-owner', 'tenant-owner'].includes(route) ? hours(periods.approvalExpiryDays * 24) : null,
         correlationId,
         at: now.toISOString(),
       }
-      return record('record_change', change, located.governing.tenantId, subject, correlationId, now)
+      return record('record_change', change, located.governing.tenantId, periods, subject, correlationId, now)
     },
 
     /**
@@ -601,10 +623,11 @@ export function createApprovals({ db, access, approvalPolicy, policy, clock = sy
       if (change.state !== 'delayed' || change.route !== 'published-delay') throw new IdentityError('conflict', 'not-pending')
       if (change.requesterId === subject.principalId) throw new IdentityError('conflict', 'own-request')
       const assurance = { level: subject.assurance.level, phishingResistant: subject.assurance.phishingResistant, authenticatedAt: subject.authenticatedAt }
+      const { approvalExpiryDays } = await safetyPeriodsFor(db, policy, group.groupId)
       const { rows } = await db.transaction(
         client => client.query<{ result: unknown }>(
           `select ${db.schema}.object_to_recovery($1, $2, $3::jsonb, $4, $5, $6) as result`,
-          [change.changeId, subject.principalId, JSON.stringify(assurance), new Date(now.getTime() + policy.approvalExpiryDays * 86_400_000), correlationId, now],
+          [change.changeId, subject.principalId, JSON.stringify(assurance), new Date(now.getTime() + approvalExpiryDays * 86_400_000), correlationId, now],
         ),
         { tenantIds: [change.tenantId], actorId: subject.principalId, correlationId, at: now },
       )

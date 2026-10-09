@@ -153,6 +153,27 @@ test('shows an owner the group, its members, invitations and changes, and rename
   await expect(page.getByRole('alert')).toHaveText('The name contains a character that is not allowed.')
 })
 
+test('shows an owner the safety periods in force, and lets them ask only for safer ones', async ({ page, context, request }) => {
+  const scenario = await seed(request)
+  await signInAs(context, scenario.owner)
+  await page.goto(`/groups/${scenario.team}`)
+  await expect(page.getByRole('heading', { name: 'Safety periods' })).toBeVisible()
+  await expect(page.getByText('168 hours')).toBeVisible()
+
+  await page.getByRole('button', { name: 'Request a change' }).click()
+  await expectAccessible(page)
+  const critical = page.getByLabel('Delay for a critical change nobody can approve (Hours)')
+  await critical.fill('100')
+  await page.getByLabel('Reason code').fill('policy-review')
+  await page.getByRole('button', { name: 'Request change' }).click()
+  await expect(page.getByRole('alert')).toHaveText('A period here cannot be less safe than the one set above this group.')
+
+  await critical.fill('240')
+  await page.getByRole('button', { name: 'Request change' }).click()
+  await expect(page.getByText('The change has been requested. It takes effect once approved.')).toBeVisible()
+  await expectAccessible(page)
+})
+
 test('reflows to 320 CSS pixels without scrolling sideways', async ({ page, context, request }) => {
   const scenario = await seed(request)
   await signInAs(context, scenario.owner)

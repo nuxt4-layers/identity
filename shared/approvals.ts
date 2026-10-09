@@ -13,6 +13,7 @@ import type { IdentityPermissionName, IdentityRiskLevel } from './permissions'
 import { groupSettingsSchema } from './group'
 import type { RequiredApprovers } from './group'
 import { storedSafeNameSchema } from './safe-names'
+import { safetyPeriodsSchema } from './safety-periods'
 
 /**
  * Governance approvals (docs/contracts.md §8), following iam-integration's
@@ -43,6 +44,7 @@ export const GOVERNANCE_CHANGES = Object.freeze({
   'group.archive': { permission: 'identity.groups:archive', confers: false },
   'group.change-settings': { permission: 'identity.group-settings:manage', confers: false },
   'group.change-approvals': { permission: 'identity.group-approvals:manage', confers: false },
+  'group.change-safety-periods': { permission: 'identity.group-approvals:manage', confers: false },
   'group.add-owner': { permission: 'identity.group-owners:manage', confers: true },
   'group.remove-owner': { permission: 'identity.group-owners:manage', confers: false },
   'group.suspend-owner': { permission: 'identity.group-owners:manage', confers: false },
@@ -93,6 +95,12 @@ export const GOVERNANCE_TARGETS = {
   /** Every setting except `approvals`, which only `group.change-approvals` changes. */
   'group.change-settings': z.strictObject({ groupId: id, settings: groupSettingsSchema.omit({ approvals: true }) }),
   'group.change-approvals': z.strictObject({ groupId: id, approvals: groupSettingsSchema.shape.approvals }),
+  /**
+   * Replaces the group's own safety periods (§21); a missing setting defers
+   * to the level above. Always `critical`; one that makes any period less
+   * safe takes effect only after the old values have run.
+   */
+  'group.change-safety-periods': z.strictObject({ groupId: id, safetyPeriods: safetyPeriodsSchema }),
   /** Makes an active member (never a guest) an owner. */
   'group.add-owner': onMembership,
   /** Demotes an owner to a member. Never the last active owner. */
@@ -147,6 +155,7 @@ export const governanceTargetSchema = z.union([
   GOVERNANCE_TARGETS['group.archive'],
   GOVERNANCE_TARGETS['group.change-settings'],
   GOVERNANCE_TARGETS['group.change-approvals'],
+  GOVERNANCE_TARGETS['group.change-safety-periods'],
   onMembership,
   GOVERNANCE_TARGETS['membership.schedule'],
   onIdentity,
