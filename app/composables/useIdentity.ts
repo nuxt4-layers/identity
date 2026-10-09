@@ -11,7 +11,10 @@ import { IDENTITY_API_PREFIX } from '../../contracts'
  * server-side rendering.
  */
 export function useIdentity() {
-  const request = useRequestFetch()
+  // Untyped by route on purpose, as Authentication's: Nitro's typed-route
+  // inference over a host's whole route table exceeds TypeScript's depth limit
+  // in larger compositions (found composing the suite in platform-test-harness).
+  const request = useRequestFetch() as unknown as (url: string, options: { method?: string, query?: Record<string, string>, body?: object }) => Promise<unknown>
   const at = (path: string) => `${IDENTITY_API_PREFIX}${path}`
   const get = <T>(path: string, query?: Record<string, string>) => request(at(path), { query }) as Promise<T>
   const send = <T>(method: 'POST' | 'PATCH' | 'DELETE', path: string, body?: object) => request(at(path), { method, body }) as Promise<T>
