@@ -1,0 +1,14 @@
+/*
+ * Tailwind source registration for @nuxt4-layers/identity.
+ *
+ * The layer's components use the SemanticPresentationTheme utility vocabulary
+ * (bg-fill-*, text-pen-*, border-edge-*). Tailwind does not scan installed
+ * packages, so a host imports this file into the stylesheet that imports
+ * Tailwind, e.g.:
+ *
+ *   @import "@nuxt4-layers/theme-manager/presentation.css";
+ *   @import "@nuxt4-layers/identity/tailwind.css";
+ */
+@source "./presentation/components";
+@source "./presentation/pages";
+@source "./presentation/utils";

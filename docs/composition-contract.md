@@ -50,6 +50,7 @@ The host application:
 - supplies `provideIdentityEventPublisher` (required), the publishing end of its outbox relay;
 - supplies `provideIdentitySubjectResolver` for the `/api/identity/*` endpoints, adapting Authentication's `getAuthenticatedPrincipal(event)`; without it every endpoint answers `unavailable`;
 - sets `NUXT_IDENTITY_BASE_URL` to its public origin; without it every state-changing endpoint is refused;
+- for the default pages: imports Theme Manager's `presentation.css` and then `@nuxt4-layers/identity/tailwind.css` into its Tailwind stylesheet, sets `identity.routes.signIn` to its sign-in page, and overrides `IdentityPersonName` with a component that asks Profile for names; or turns the pages off (`identity: { pages: { enabled: false } }`);
 - builds its own invitation endpoint, which calls `getIdentityJoining().invite` and hands the token and the address to its delivery, so that the address never reaches Identity;
 - adds `IDENTITY_PERMISSIONS` to Authorisation's catalogue;
 - optionally supplies policy overrides through `provideIdentityPolicy`, within bounds;

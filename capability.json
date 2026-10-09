@@ -21,13 +21,21 @@
       "contractVersion": "1",
       "optional": false,
       "purpose": "the subject of every change is an AuthenticatedPrincipal whose principalId is the identity identifier; the host passes it in"
+    },
+    {
+      "capability": "SemanticPresentationTheme",
+      "contractVersion": "1",
+      "optional": true,
+      "purpose": "styles the default pages and components; without it they render unstyled but fully functional"
     }
   ],
   "publicExports": [
     ".",
     "./contracts",
     "./conformance",
-    "./capability"
+    "./capability",
+    "./presentation",
+    "./tailwind.css"
   ],
   "ports": [
     {

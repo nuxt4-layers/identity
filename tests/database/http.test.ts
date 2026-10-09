@@ -154,6 +154,7 @@ describe.skipIf(!hasDatabase)('the /api/identity endpoints', () => {
     expect(status).toBe(200)
     expect(data.actor).toMatchObject({ identityId: rootOwner, identityState: 'active' })
     expect(data.lastOwnerOf).toEqual([root])
+    expect(data.groupNames).toEqual([{ groupId: root, name: 'Company' }])
   })
 
   it('creates, shows and renames a group, refusing an unknown group and a refused caller alike', async () => {

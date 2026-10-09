@@ -13,15 +13,20 @@
     ".": "./nuxt.config.ts",
     "./contracts": "./contracts/index.ts",
     "./conformance": "./conformance/index.ts",
-    "./capability": "./capability.json"
+    "./capability": "./capability.json",
+    "./presentation": "./presentation/index.ts",
+    "./tailwind.css": "./tailwind.css"
   },
   "files": [
     "app",
     "server",
+    "modules",
     "shared",
     "contracts",
     "conformance",
     "capability.json",
+    "presentation",
+    "tailwind.css",
     "nuxt.config.ts",
     "README.md",
     "LICENSE"
@@ -32,7 +37,8 @@
     "build:playground": "nuxt build playground",
     "typecheck": "nuxt typecheck",
     "test": "vitest run",
-    "check": "pnpm typecheck && pnpm test"
+    "check": "pnpm typecheck && pnpm test",
+    "test:e2e": "pnpm build:playground && playwright test"
   },
   "dependencies": {
     "zod": "^4.6.5"
@@ -41,11 +47,16 @@
     "nuxt": "^4.5.0"
   },
   "devDependencies": {
+    "@axe-core/playwright": "^4.13.0",
+    "@nuxt4-layers/theme-manager": "git+https://github.com/nuxt4-layers/theme-manager.git#934d1bd33e0731aafea0d454857dc8fbb756ccb2",
+    "@playwright/test": "^1.64.0",
+    "@tailwindcss/vite": "^4.3.3",
     "@types/node": "^24.13.6",
     "@types/pg": "^8.23.1",
     "h3": "^1.15.11",
     "nuxt": "^4.5.2",
     "pg": "^8.23.1",
+    "tailwindcss": "^4.3.3",
     "typescript": "^6.0.3",
     "vitest": "^5.0.3",
     "vue-tsc": "^3.3.11"
