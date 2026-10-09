@@ -244,8 +244,22 @@ export type { IdentityErrorBody, IdentityErrorCode } from '../shared/errors'
 export { IDENTITY_ERROR_CODES, IDENTITY_ERROR_STATUS, IdentityCompositionError, IdentityError, isIdentityErrorCode } from '../shared/errors'
 
 // Policy
-export type { IdentityPolicy, IdentityPolicyInput, IdentityPolicySetting } from '../shared/policy'
+export type { IdentityPolicy, IdentityPolicyInput, IdentityPolicyPeriods, IdentityPolicySetting } from '../shared/policy'
 export { DEFAULT_IDENTITY_POLICY, IDENTITY_POLICY_BOUNDS, identityPolicyInputSchema, loosenedSettings, resolveIdentityPolicy } from '../shared/policy'
+export type { EffectiveSafetyPeriods, SafetyPeriodLevels, SafetyPeriodRefusal, SafetyPeriods, SafetyPeriodSetting } from '../shared/safety-periods'
+export {
+  PLATFORM_ONLY_SAFETY_PERIODS,
+  SAFETY_PERIOD_REFUSALS,
+  SAFETY_PERIOD_SETTINGS,
+  effectiveSafetyPeriods,
+  effectiveSafetyPeriodsSchema,
+  lessSafe,
+  platformSafetyPeriods,
+  refuseSafetyPeriods,
+  safetyPeriodsSchema,
+  saferValue,
+  waitOutHours,
+} from '../shared/safety-periods'
 
 /**
  * Every record Identity stores, every event it publishes and every answer

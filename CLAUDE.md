@@ -33,5 +33,6 @@ A member of the IAM suite (ADR-0005). Governed by `nuxt4-layers/platform-archite
 - Events come from SECURITY DEFINER row-change triggers or those functions, never from the runtime role; every write runs through `Database.transaction` with an actor and correlation identifier, or the trigger refuses it. The runtime role's `UPDATE` grants are per column, and guard triggers refuse root groups and self-made owners; widen them only together with the approvals they need.
 - Events and logs carry opaque identifiers, codes and correlation identifiers only.
 - Defaults are secure; loosening a safety period or limit needs a documented risk treatment.
+- Safety periods (contract §21) change only through a `critical`, approved `group.change-safety-periods`: the platform group in either direction within the hard bounds, root groups and groups only safer, a less safe value waiting out the old one. The runtime role never writes `group.safety_periods`, and the database checks every recorded change against the periods in force. Keep `tests/database/safety-periods.test.ts` proving it.
 - Keep `docs/contracts.md`, `docs/threat-model.md` (control register) and `docs/roadmap.md` in step with code. Link to other `nuxt4-layers` documents pinned to a commit.
 - Package manager: pnpm. Commit `pnpm-lock.yaml`.

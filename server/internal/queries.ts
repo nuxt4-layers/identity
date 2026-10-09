@@ -3,6 +3,7 @@ import type {
   GroupView,
   IdentityAccessDecision,
   IdentityExport,
+  IdentityPolicy,
   IdentityPermissionName,
   IdentitySubject,
   MembershipRecord,
@@ -11,6 +12,7 @@ import type {
 } from '../../contracts'
 import {
   correlationIdSchema,
+  effectiveSafetyPeriods,
   effectiveStatus,
   groupDescriptionSchema,
   groupMembersPageSchema,
@@ -30,6 +32,7 @@ import {
 } from '../../contracts'
 import type { Database } from './database'
 import { createDirectory } from './directory'
+import { safetyLevels } from './safety-periods'
 import type { Clock } from './provisioning'
 import { systemClock } from './provisioning'
 
@@ -43,6 +46,7 @@ import { systemClock } from './provisioning'
 export interface QueriesDependencies {
   db: Database
   access: IdentityAccessDecision
+  policy: IdentityPolicy
   clock?: Clock
 }
 
@@ -57,7 +61,7 @@ function parse<T>(run: () => T): T {
 
 const iso = (value: Date | string | null): string | null => (value === null ? null : new Date(value).toISOString())
 
-export function createQueries({ db, access, clock = systemClock }: QueriesDependencies) {
+export function createQueries({ db, access, policy, clock = systemClock }: QueriesDependencies) {
   async function authorisedGroup(subject: IdentitySubject, groupId: string, permission: IdentityPermissionName, correlationId: string) {
     const { rows } = await db.transaction(client => client.query<{ result: unknown }>(`select ${db.schema}.describe_group($1) as result`, [groupId]))
     const group = rows[0]?.result ? groupDescriptionSchema.parse(rows[0].result) : null
@@ -102,7 +106,7 @@ export function createQueries({ db, access, clock = systemClock }: QueriesDepend
       return selfViewSchema.parse({ actor, groupNames: names, lastOwnerOf: rows[0]?.groups ?? [] })
     },
 
-    /** A group, its settings and lineage (`identity.groups:view`). */
+    /** A group, its settings, lineage and safety periods (`identity.groups:view`). */
     async group(input: { subject: IdentitySubject, groupId: string, correlationId: string }): Promise<GroupView> {
       const { subject, groupId, correlationId } = prepare(input)
       const group = await authorisedGroup(subject, groupId, 'identity.groups:view', correlationId)
@@ -112,6 +116,7 @@ export function createQueries({ db, access, clock = systemClock }: QueriesDepend
       ), { tenantIds: [group.tenantId] })
       const row = rows[0]
       if (!row) throw new IdentityError('forbidden')
+      const levels = await safetyLevels(db, policy, groupId)
       return groupViewSchema.parse({
         group: {
           groupId: row.group_id,
@@ -126,6 +131,7 @@ export function createQueries({ db, access, clock = systemClock }: QueriesDepend
           version: row.version,
         },
         lineage: group.lineage,
+        safetyPeriods: { own: levels.group, effective: effectiveSafetyPeriods(policy, levels), isPlatformGroup: levels.isPlatformGroup },
       })
     },
 

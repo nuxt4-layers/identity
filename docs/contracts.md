@@ -174,7 +174,7 @@ Where a group's `joining.open` is on, anyone already in its tenant (their home t
 
 Identity owns pending **governance** changes; Authorisation owns pending role and grant changes. Both follow iam-integration's [approvals process](https://github.com/nuxt4-layers/iam-integration/blob/d46b16580a711b840edb1eef5db51b2fe3d0421f/docs/processes/approvals.md).
 
-**Changes Identity records** (`GOVERNANCE_CHANGES`): create a root group, reparent, archive, change settings, change approval requirements, add, remove or suspend an owner, appoint an owner to an orphaned group, reinstate or reschedule a membership, suspend or reinstate an identity, and create a service identity. Each names the permission it exercises (§9) and whether it **confers** something on its beneficiary.
+**Changes Identity records** (`GOVERNANCE_CHANGES`): create a root group, reparent, archive, change settings, change approval requirements, change safety periods (§21), add, remove or suspend an owner, appoint an owner to an orphaned group, reinstate or reschedule a membership, suspend or reinstate an identity, and create a service identity. Each names the permission it exercises (§9) and whether it **confers** something on its beneficiary.
 
 **A pending change records** its requester, **beneficiary**, risk, **justification** (a reason code, and a reference where the group requires one), the approvals required, the route, the approvals given (approver, decision, time, assurance and the digest they approved), a digest of the exact change, the expiry or delay, and the correlation identifier.
 
@@ -185,9 +185,9 @@ Identity owns pending **governance** changes; Authorisation owns pending role an
 3. **Exact change.** An approval is bound to the change's digest; a change that differs needs a new approval.
 4. **Assurance.** Requesters and approvers meet `STEP_UP_REQUIREMENTS` for the risk: `high` needs aal2; `critical` needs phishing-resistant aal2 within the last 15 minutes.
 5. **Requirement.** `approvalRequirement` takes the group's setting, never below the floor (`low` and `medium`: 0 beyond a requester who is never the beneficiary; `high` and `critical`: 1). Raising it is `critical`.
-6. **Routes** (`chooseRoute`): qualifying approvers in the group; otherwise an owner of the parent group; otherwise an owner of the tenant's root group; otherwise a **published delay** of `publishedDelayHighHours` (72) or `publishedDelayCriticalHours` (168) that the requester cannot shorten and may cancel. A change awaiting an approver expires after `approvalExpiryDays` (7).
+6. **Routes** (`chooseRoute`): qualifying approvers in the group; otherwise an owner of the parent group; otherwise an owner of the tenant's root group; otherwise a **published delay** of `publishedDelayHighHours` (72 by default) or `publishedDelayCriticalHours` (168) that the requester cannot shorten and may cancel. A change awaiting an approver expires after `approvalExpiryDays` (7). Each is the value in force for the group (§21).
 7. **Personal-group sovereignty.** In their own personal group a person needs **no approver**, including to share what it owns with others (sharing itself is an Authorisation grant, under the same rule), but must still **step up** to the risk level's assurance, which protects them if a session is stolen.
-8. **Recovery hold.** After credential recovery, `critical` governance changes the recovered person requests are held for `recoveryHoldHours` (72) and announced to their groups' co-owners. The host relays Authentication's `authentication.credentials-recovered` to `recordIdentityCredentialRecovery` (§18). A held change records `heldUntil`; `approval.held` announces it; approved before the hold ends, it waits as `delayed` and maintenance applies it when the hold ends. The database applies the hold itself, never shorter than 24 hours.
+8. **Recovery hold.** After credential recovery, `critical` governance changes the recovered person requests are held for `recoveryHoldHours` (72 by default; the value in force for the change's group, §21) and announced to their groups' co-owners. The host relays Authentication's `authentication.credentials-recovered` to `recordIdentityCredentialRecovery` (§18). A held change records `heldUntil`; `approval.held` announces it; approved before the hold ends, it waits as `delayed` and maintenance applies it when the hold ends. The database applies the hold itself, never shorter than 24 hours.
 
 ### 8.1 Requesting a change
 
@@ -200,6 +200,7 @@ A requester submits a `governanceRequestSchema`: the change `type`, its `target`
 | `group.archive` | group (refused while a child is not archived, or a service identity it owns is active; ends memberships when `onArchive` is `end-memberships`) | the group | none |
 | `group.change-settings` | group, every setting except `approvals` | the group | none |
 | `group.change-approvals` | group, `approvals` (never below the floor) | the group | none |
+| `group.change-safety-periods` | group, its own `safetyPeriods` (§21) | the group | none |
 | `group.add-owner` | an active member's membership (never a guest) | the group | the member |
 | `group.remove-owner`, `group.suspend-owner` | an owner's membership (never the last active owner; suspending oneself is refused) | the group | the owner |
 | `membership.reinstate` | a suspended membership | the group | the member |
@@ -216,7 +217,7 @@ The **route** is chosen when the change is recorded: `none` (it applies at once,
 
 ### 8.2 What the database holds as well
 
-Pending changes are recorded, decided, cancelled and applied only through SECURITY DEFINER functions; the runtime role may read them, under row-level security, and nothing else. Those functions check again what the database can know, whatever the layer sends: the risk is never below Identity's declared risk; the requirement never below the group's; no self-grant; a justification and, where required, a reference; a published delay of at least 24 hours (`high`) or 72 hours (`critical`); an approver who is an active person, neither requester nor beneficiary, not deciding twice, and, for the owner fallbacks, an owner now. The digest is computed by the database over everything the change will do and checked again before it applies, so an altered record cannot be applied.
+Pending changes are recorded, decided, cancelled and applied only through SECURITY DEFINER functions; the runtime role may read them, under row-level security, and nothing else. Those functions check again what the database can know, whatever the layer sends: the risk is never below Identity's declared risk; the requirement never below the group's; no self-grant; a justification and, where required, a reference; a published delay, expiry and recovery hold no less safe than the periods in force for the group (§21), and never beyond the hard bounds; an approver who is an active person, neither requester nor beneficiary, not deciding twice, and, for the owner fallbacks, an owner now. The digest is computed by the database over everything the change will do and checked again before it applies, so an altered record cannot be applied.
 
 When a change applies, every rule is checked again: the group is still active, the membership has not ended, the last owner stays, the hierarchy has no cycle and is within `maxHierarchyDepth` including the moved group's descendants, the guest term holds. If one no longer holds, the change is `rejected` and `approval.decided` says so. Every event the change causes carries the change's correlation identifier and, where the payload has one, its `changeId`.
 
@@ -224,7 +225,7 @@ When a change applies, every rule is checked again: the group is still active, t
 
 Following iam-integration's recovery process, `group.appoint-owner` makes an active member (never a guest) the owner of an orphaned group. It is `critical`, and the authority comes from Identity's own record of ownership rather than a permission:
 
-1. An **owner of the parent group or of the tenant's root group** proposes any active member but themselves. Another owner above approves (`parent-owner`, then `tenant-owner`); where none exists, the change applies after a published delay of `orphanRecoveryDelayDays` (14).
+1. An **owner of the parent group or of the tenant's root group** proposes any active member but themselves. Another owner above approves (`parent-owner`, then `tenant-owner`); where none exists, the change applies after a published delay of `orphanRecoveryDelayDays` (14 by default; the value in force, §21).
 2. Where **no owner exists above** (an orphaned root group, or no owners left above it), an active member may propose the group's **longest-standing active member**, themselves included, through the published delay only. During the delay any active member but the proposer may **object** (`object`), recorded as an approval record with decision `object`: automatic appointment stops and the change moves to the `platform-operator` route, decided by a qualifying member of the host's platform group before `approvalExpiryDays`.
 
 Members of the group may see its recovery to object to it. A break-glass identity may also appoint an owner at once (§13). Recovery never reads a personal group, and personal groups are never orphaned.
@@ -349,6 +350,8 @@ A `break-glass` identity has no personal group, memberships or roles, and signs 
 | `maxHierarchyDepth` | 10 | 1–32 | shorter |
 | `invitationsPerInviterPerHour`, `invitationsPerGroupPerDay`, `acceptanceAttemptsPerHour` | 50, 200, 20 | see `IDENTITY_POLICY_BOUNDS` | shorter |
 
+The six safety periods among these (`publishedDelayHighHours`, `publishedDelayCriticalHours`, `approvalExpiryDays`, `orphanRecoveryDelayDays`, `recoveryHoldHours`, `closureGraceDays`) are starting values: the platform's operators and owners may change them while the platform runs (§21).
+
 The policy also lists the `jurisdictions` and `dataRegions` the host supports, the `defaultHomeTenantId`, and the `platformGroupId`: the standard group whose owners and qualifying members are the platform's operators, where root groups and identity suspension are decided. With none, those changes are refused.
 
 ## 16. SCIM
@@ -443,6 +446,24 @@ The layer registers default pages and `Identity*` components (`modules/presentat
 
 **Accessibility.** WCAG 2.2 AA: landmarks and one `h1` per page, labelled sections and fields, errors announced and focused, status messages announced politely, keyboard operation throughout, 24-pixel targets, reflow at 320 CSS pixels. Browser tests (`tests/e2e/pages.spec.ts`) run axe's WCAG 2.2 AA rules and check non-text contrast with Theme Manager's real styles.
 
+## 21. Safety periods
+
+The waits that protect people when nobody else can stop a change, following iam-integration's [safety periods](https://github.com/nuxt4-layers/iam-integration/blob/048210f65831f3eb17c0260ce340715cee49f168/docs/processes/README.md#safety-periods). The host's policy gives each a starting value (§15); while the platform runs, three levels may change them, each through a `group.change-safety-periods` change (`identity.group-approvals:manage`, always `critical`):
+
+| Level | Who | May set |
+|---|---|---|
+| Platform | Owners and qualifying members of the host's platform group (`platformGroupId`) | Any value within the hard bounds. Less safe than the host's value needs a justification `reference` to its risk treatment (`risk-treatment-required`) |
+| Tenant | A root group's owners | Safer values for every group under that root (`safety-period-floor` otherwise) |
+| Group | The group's owners | Safer values for the group |
+
+`closureGraceDays` belongs to the person, not to any group, so only the platform group sets it (`platform-only`); no group's owners may lengthen how long someone waits to leave.
+
+**In force** (`effectiveSafetyPeriods`): the safest of the platform's value (its own setting, else the host's), the root group's and the group's own. A group's own settings (`safetyPeriodsSchema`) list only what it sets; a missing setting defers to the level above, and a tenant or group may later relax a value back as far as the level above. `GET /groups/:groupId` shows both, and whether the group is the platform group (`groupViewSchema.safetyPeriods`); the default group page shows them and asks for changes.
+
+**A less safe value waits out the old one** (`waitOutHours`). Once approved, a change that makes any period less safe takes effect only after the longer of the current `publishedDelayCriticalHours` and the current value of each delay it shortens, counted from the request; it is held like a recovery hold (`heldUntil`, `approval.held`). A safer value takes effect when approved. A change keeps the periods it was given when requested. Applying announces `group.settings-changed` with `changed: ['safetyPeriods']`.
+
+**What the database holds as well.** Each group's own periods are a column the runtime role cannot write; a change of periods records the platform group and host values it was requested under, in its digest, and on applying checks again that the group is active, its periods unchanged since the request, the values within bounds, and, outside the platform group, nothing less safe than the levels above and no platform-only setting. Whenever any change is recorded, the database checks its delay, expiry and recovery hold against the periods in force for its group, and holds a change of periods until the old values have run. The layer tells it, per transaction, which group is the platform's and the host's values; without them it falls back to the hard bounds. The closure grace period is the layer's to apply, with the database's 7-day floor.
+
 ## 17. Versioning
 
 This is contract version 1, provided by package 0.1. Before 1.0, breaking changes are listed here and in the release notes. Reserved for later versions: further `pausing` values (`notice`, `approval`), identity-provider group-claim mapping (improvement register item 18), and the tenancy module's extraction.
@@ -459,3 +480,4 @@ Changes before 1.0:
 | 3c | `group.appoint-owner` is requestable; route `platform-operator`; approval decision `object`; `group.recovered` and `approval.held` events; `REAUTHENTICATION_MAX_AGE_SECONDS` | No |
 | 4 | `IdentitySubjectResolver` port; administration schemas (`selfViewSchema`, `groupViewSchema`, `groupMembersPageSchema`, `identityExportSchema`); `IdentityErrorBody.reason` | No |
 | 5 | `selfViewSchema` gains `groupNames` (the person's own groups); presentation entry points `./presentation` and `./tailwind.css` | No |
+| Safety periods | `group.change-safety-periods`; `safetyPeriodsSchema`, `effectiveSafetyPeriodsSchema` and helpers; `groupViewSchema` gains `safetyPeriods`; `group.settings-changed` may name `safetyPeriods`; migration `0007_safety_periods` | `groupViewSchema` readers gain a field, and anyone constructing it must add it; consumers of `group.settings-changed` must accept the new setting name |

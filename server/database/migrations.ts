@@ -2139,6 +2139,277 @@ grant execute on function
 to {{runtime}};
 `,
   },
+  {
+    id: '0007_safety_periods',
+    sql: `
+-- Safety periods (docs/contracts.md §21) --------------------------------------
+-- Each standard group may set its own safety periods. The platform group's
+-- are the platform's; a root group's apply to every group under it; a
+-- group's to itself. The safest applies, within hard bounds. Only a
+-- 'group.change-safety-periods' change, approved at critical risk, writes
+-- them; the runtime role has no grant on the column.
+
+create function {{schema}}.safety_rule(p_key text) returns jsonb language sql immutable as $$
+  select '{
+    "publishedDelayHighHours": {"min": 24, "max": 336, "longer": true, "hours": 1},
+    "publishedDelayCriticalHours": {"min": 72, "max": 720, "longer": true, "hours": 1},
+    "approvalExpiryDays": {"min": 1, "max": 14, "longer": false, "hours": 24},
+    "orphanRecoveryDelayDays": {"min": 7, "max": 60, "longer": true, "hours": 24},
+    "recoveryHoldHours": {"min": 24, "max": 336, "longer": true, "hours": 1},
+    "closureGraceDays": {"min": 7, "max": 90, "longer": true, "hours": 24}
+  }'::jsonb -> p_key
+$$;
+
+create function {{schema}}.safety_keys() returns text[] language sql immutable as $$
+  select array['publishedDelayHighHours', 'publishedDelayCriticalHours', 'approvalExpiryDays', 'orphanRecoveryDelayDays', 'recoveryHoldHours', 'closureGraceDays']
+$$;
+
+-- Only known settings, as whole numbers within the hard bounds.
+create function {{schema}}.safety_periods_valid(p jsonb) returns boolean language sql immutable as $$
+  select jsonb_typeof(p) = 'object' and not exists (
+    select 1 from jsonb_each(p) e
+    where {{schema}}.safety_rule(e.key) is null or jsonb_typeof(e.value) <> 'number'
+      or (e.value)::numeric <> trunc((e.value)::numeric)
+      or (e.value)::numeric < ({{schema}}.safety_rule(e.key) ->> 'min')::numeric
+      or (e.value)::numeric > ({{schema}}.safety_rule(e.key) ->> 'max')::numeric)
+$$;
+
+-- The safer of two values; a null defers to the other.
+create function {{schema}}.safer(p_key text, a numeric, b numeric) returns numeric language sql immutable as $$
+  select case when a is null then b when b is null then a
+    when ({{schema}}.safety_rule(p_key) ->> 'longer')::boolean then greatest(a, b) else least(a, b) end
+$$;
+
+create function {{schema}}.less_safe(p_key text, p_next numeric, p_current numeric) returns boolean language sql immutable as $$
+  select case when ({{schema}}.safety_rule(p_key) ->> 'longer')::boolean then p_next < p_current else p_next > p_current end
+$$;
+
+alter table {{schema}}."group" add column safety_periods jsonb not null default '{}'::jsonb;
+alter table {{schema}}."group" add constraint group_safety_periods_valid
+  check ({{schema}}.safety_periods_valid(safety_periods) and (kind = 'standard' or safety_periods = '{}'::jsonb));
+
+-- The runtime role may create groups, but never with safety periods of their own.
+create function {{schema}}.guard_group_safety_periods() returns trigger language plpgsql as $$
+begin
+  if not {{schema}}.is_owner_role() and new.safety_periods <> '{}'::jsonb then raise exception 'identity:requires-approval'; end if;
+  return new;
+end $$;
+
+create trigger group_safety_periods_guard before insert on {{schema}}."group" for each row execute function {{schema}}.guard_group_safety_periods();
+
+-- The platform's values: its own settings over the host's, over the least
+-- safe hard bound when the host's are not known.
+create function {{schema}}.platform_periods(p_own jsonb, p_host jsonb) returns jsonb language sql immutable as $$
+  select jsonb_object_agg(k, coalesce(
+    (p_own ->> k)::numeric,
+    (p_host ->> k)::numeric,
+    case when ({{schema}}.safety_rule(k) ->> 'longer')::boolean then ({{schema}}.safety_rule(k) ->> 'min')::numeric
+      else ({{schema}}.safety_rule(k) ->> 'max')::numeric end))
+  from unnest({{schema}}.safety_keys()) k
+$$;
+
+-- The periods in force for a group: the safest of the platform's, its root
+-- group's and its own (p_own, when given, instead of what is stored). The
+-- closure grace period is the platform's alone.
+create function {{schema}}.effective_periods(p_group uuid, p_platform uuid, p_host jsonb, p_own jsonb) returns jsonb language plpgsql stable as $$
+declare
+  v_own jsonb;
+  v_root jsonb;
+  v_platform jsonb;
+  v_lineage uuid[];
+  v_result jsonb := '{}'::jsonb;
+  k text;
+  v numeric;
+begin
+  select coalesce(p_own, g.safety_periods) into v_own from {{schema}}."group" g where g.group_id = p_group;
+  v_lineage := {{schema}}.lineage_of(p_group);
+  if cardinality(v_lineage) > 1 then
+    select g.safety_periods into v_root from {{schema}}."group" g where g.group_id = v_lineage[1];
+  end if;
+  if p_platform is not null and p_platform = p_group then
+    v_platform := {{schema}}.platform_periods(v_own, p_host);
+  elsif p_platform is not null then
+    select {{schema}}.platform_periods(g.safety_periods, p_host) into v_platform from {{schema}}."group" g where g.group_id = p_platform and g.kind = 'standard';
+  end if;
+  v_platform := coalesce(v_platform, {{schema}}.platform_periods('{}'::jsonb, p_host));
+  foreach k in array {{schema}}.safety_keys() loop
+    v := (v_platform ->> k)::numeric;
+    if k <> 'closureGraceDays' then
+      v := {{schema}}.safer(k, v, (v_root ->> k)::numeric);
+      v := {{schema}}.safer(k, v, (v_own ->> k)::numeric);
+    end if;
+    v_result := v_result || jsonb_build_object(k, v);
+  end loop;
+  return v_result;
+end $$;
+
+-- How long a change of periods waits once approved, in hours: the longer of
+-- the current critical delay and each delay it shortens; zero if nothing
+-- becomes less safe.
+create function {{schema}}.wait_out_hours(p_current jsonb, p_next jsonb) returns numeric language sql immutable as $$
+  select coalesce(max(greatest((p_current ->> 'publishedDelayCriticalHours')::numeric,
+    case when ({{schema}}.safety_rule(k) ->> 'longer')::boolean
+      then (p_current ->> k)::numeric * ({{schema}}.safety_rule(k) ->> 'hours')::numeric else 0 end)), 0)
+  from unnest({{schema}}.safety_keys()) k
+  where {{schema}}.less_safe(k, (p_next ->> k)::numeric, (p_current ->> k)::numeric)
+$$;
+
+-- The values a change of periods compares: the platform's for the platform
+-- group, the group's in force otherwise.
+create function {{schema}}.compared_periods(p_group uuid, p_platform uuid, p_host jsonb, p_own jsonb) returns jsonb language plpgsql stable as $$
+begin
+  if p_platform is not null and p_platform = p_group then
+    return {{schema}}.platform_periods(coalesce(p_own, (select g.safety_periods from {{schema}}."group" g where g.group_id = p_group)), p_host);
+  end if;
+  return {{schema}}.effective_periods(p_group, p_platform, p_host, p_own);
+end $$;
+
+-- Every recorded change keeps the periods in force for its group: a delay
+-- no shorter, an expiry no longer, the recovery hold no shorter. A change of
+-- periods that makes any less safe is held until the old values have run.
+-- The layer sets the platform group and the host's values for the
+-- transaction; without them, the hard bounds stand in for the host's.
+create function {{schema}}.enforce_safety_periods() returns trigger language plpgsql as $$
+declare
+  v_platform uuid := {{schema}}.context_uuid('identity.platform_group_id');
+  v_host jsonb := nullif(current_setting('identity.host_periods', true), '')::jsonb;
+  v_periods jsonb;
+  v_need interval;
+  v_recovered timestamptz;
+  v_wait numeric;
+begin
+  v_periods := {{schema}}.effective_periods(new.group_id, v_platform, v_host, null);
+  if new.route = 'published-delay' then
+    v_need := case
+      when new.type = 'group.appoint-owner' then make_interval(days => (v_periods ->> 'orphanRecoveryDelayDays')::integer)
+      when new.risk = 'critical' then make_interval(hours => (v_periods ->> 'publishedDelayCriticalHours')::integer)
+      else make_interval(hours => (v_periods ->> 'publishedDelayHighHours')::integer) end;
+    if new.delay_ends_at < new.created_at + v_need then raise exception 'identity:approval-floor'; end if;
+  end if;
+  if new.expires_at is not null and new.expires_at > new.created_at + make_interval(days => (v_periods ->> 'approvalExpiryDays')::integer) then
+    raise exception 'identity:approval-floor';
+  end if;
+  if new.risk = 'critical' then
+    select i.credentials_recovered_at into v_recovered from {{schema}}.identity i where i.identity_id = new.requester_id;
+    if v_recovered is not null and v_recovered + make_interval(hours => (v_periods ->> 'recoveryHoldHours')::integer) > new.created_at then
+      new.held_until := greatest(new.held_until, v_recovered + make_interval(hours => (v_periods ->> 'recoveryHoldHours')::integer));
+    end if;
+  end if;
+  if new.type = 'group.change-safety-periods' then
+    if not {{schema}}.safety_periods_valid(new.target -> 'safetyPeriods') then raise exception 'identity:invalid-safety-periods'; end if;
+    v_wait := {{schema}}.wait_out_hours(
+      {{schema}}.compared_periods(new.group_id, v_platform, v_host, null),
+      {{schema}}.compared_periods(new.group_id, v_platform, v_host, new.target -> 'safetyPeriods'));
+    if v_wait > 0 then
+      new.held_until := greatest(new.held_until, new.created_at + make_interval(hours => v_wait::integer));
+    end if;
+  end if;
+  if new.route = 'published-delay' and new.held_until is not null then new.delay_ends_at := greatest(new.delay_ends_at, new.held_until); end if;
+  return new;
+end $$;
+
+-- Fires after pending_change_hold (triggers fire in name order).
+create trigger pending_change_periods before insert on {{schema}}.pending_change
+  for each row execute function {{schema}}.enforce_safety_periods();
+
+-- The declared risk of the new change.
+create or replace function {{schema}}.declared_risk(p_type text) returns text language sql immutable as $$
+  select case p_type
+    when 'group.create-root' then 'high' when 'group.reparent' then 'critical' when 'group.archive' then 'high'
+    when 'group.change-settings' then 'high' when 'group.change-approvals' then 'critical'
+    when 'group.change-safety-periods' then 'critical'
+    when 'group.add-owner' then 'critical' when 'group.remove-owner' then 'critical' when 'group.suspend-owner' then 'critical'
+    when 'membership.reinstate' then 'medium' when 'membership.schedule' then 'medium'
+    when 'identity.suspend' then 'high' when 'identity.reinstate' then 'high' when 'service-identity.create' then 'high'
+  end
+$$;
+
+-- Applies a change of periods, checking every rule again: the group is
+-- active and its periods unchanged since the request; outside the platform
+-- group (as recorded with the change) nothing is less safe than the levels
+-- above and the platform-only settings are absent.
+create function {{schema}}.apply_safety_periods(c {{schema}}.pending_change, p_at timestamptz) returns void language plpgsql as $$
+declare
+  v_group {{schema}}."group"%rowtype;
+  v_platform uuid := (c.internal ->> 'platformGroupId')::uuid;
+  v_host jsonb := c.internal -> 'hostPeriods';
+  v_next jsonb := c.target -> 'safetyPeriods';
+  v_above jsonb;
+  v_version integer;
+  k text;
+begin
+  if {{schema}}.digest_of(c) <> c.change_digest then raise exception 'identity:change-differs'; end if;
+  perform {{schema}}.set_context(c.requester_id, c.correlation_id, p_at);
+  perform set_config('identity.change_id', c.change_id::text, true);
+  select * into v_group from {{schema}}."group" where group_id = (c.target ->> 'groupId')::uuid and kind = 'standard' for update;
+  if not found then raise exception 'identity:unknown'; end if;
+  if v_group.state <> 'active' then raise exception 'identity:group-not-active'; end if;
+  if v_group.safety_periods <> (c.internal -> 'basePeriods') then raise exception 'identity:changed-since-request'; end if;
+  if not {{schema}}.safety_periods_valid(v_next) then raise exception 'identity:invalid-safety-periods'; end if;
+  if v_platform is null or v_platform <> v_group.group_id then
+    if v_next ? 'closureGraceDays' then raise exception 'identity:platform-only'; end if;
+    v_above := {{schema}}.effective_periods(v_group.group_id, v_platform, v_host, '{}'::jsonb);
+    for k in select jsonb_object_keys(v_next) loop
+      if {{schema}}.less_safe(k, (v_next ->> k)::numeric, (v_above ->> k)::numeric) then raise exception 'identity:safety-period-floor'; end if;
+    end loop;
+  end if;
+  update {{schema}}."group" set safety_periods = v_next where group_id = v_group.group_id returning version into v_version;
+  perform {{schema}}.enqueue_event('group.settings-changed', c.requester_id, 'group', v_group.group_id, v_version, v_group.tenant_id, c.correlation_id, p_at,
+    jsonb_build_object('groupId', v_group.group_id, 'changed', jsonb_build_array('safetyPeriods')));
+  perform set_config('identity.change_id', '', true);
+end $$;
+
+create or replace function {{schema}}.settle_change(p_change uuid, p_at timestamptz, p_actor uuid) returns text language plpgsql as $$
+declare c {{schema}}.pending_change%rowtype; v_outcome text; v_version integer;
+begin
+  select * into c from {{schema}}.pending_change where change_id = p_change for update;
+  if c.held_until is not null and c.held_until > p_at then
+    update {{schema}}.pending_change set state = 'delayed', delay_ends_at = c.held_until where change_id = p_change;
+    return 'held';
+  end if;
+  begin
+    if c.type = 'group.appoint-owner' then
+      if {{schema}}.digest_of(c) <> c.change_digest then raise exception 'identity:change-differs'; end if;
+      perform {{schema}}.set_context(c.requester_id, c.correlation_id, p_at);
+      perform set_config('identity.change_id', c.change_id::text, true);
+      perform {{schema}}.appoint_owner((c.target ->> 'membershipId')::uuid, p_at);
+      perform set_config('identity.change_id', '', true);
+    elsif c.type = 'group.change-safety-periods' then
+      perform {{schema}}.apply_safety_periods(c, p_at);
+    else
+      perform {{schema}}.apply_change(c, p_at);
+    end if;
+    update {{schema}}.pending_change set state = 'applied', decided_at = p_at where change_id = p_change returning version into v_version;
+    v_outcome := 'applied';
+  exception when others then
+    update {{schema}}.pending_change set state = 'rejected', decided_at = p_at, failure = left(sqlerrm, 200) where change_id = p_change returning version into v_version;
+    v_outcome := 'rejected';
+  end;
+  perform {{schema}}.enqueue_event('approval.decided', p_actor, 'approval', p_change, v_version, c.tenant_id, c.correlation_id, p_at,
+    jsonb_build_object('changeId', p_change, 'outcome', v_outcome));
+  return v_outcome;
+end $$;
+
+-- For the layer: a standard group's own periods, its root group's (null for
+-- a root) and the platform group's (null without one). Numbers only.
+create function {{schema}}.safety_periods_of(p_group uuid, p_platform uuid)
+returns jsonb language sql stable security definer set search_path = pg_catalog, pg_temp as $$
+  select jsonb_build_object(
+    'own', g.safety_periods,
+    'root', (select r.safety_periods from {{schema}}."group" r
+      where cardinality({{schema}}.lineage_of(g.group_id)) > 1 and r.group_id = ({{schema}}.lineage_of(g.group_id))[1]),
+    'platform', (select p.safety_periods from {{schema}}."group" p where p.group_id = p_platform and p.kind = 'standard'),
+    'isPlatformGroup', (g.group_id = p_platform) is true)
+  from {{schema}}."group" g where g.group_id = p_group and g.kind = 'standard'
+$$;
+
+-- Privileges ----------------------------------------------------------------
+
+revoke all on all functions in schema {{schema}} from public;
+-- The column's check runs as whoever writes the row.
+grant execute on function {{schema}}.safety_periods_of(uuid, uuid), {{schema}}.safety_periods_valid(jsonb), {{schema}}.safety_rule(text) to {{runtime}};
+`,
+  },
 ]
 
 const IDENTIFIER_PATTERN = /^[a-z_][a-z0-9_]{0,62}$/
