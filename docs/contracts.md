@@ -416,6 +416,33 @@ Deliberately **not** endpoints, because they need something only the host has:
 
 `useIdentity()` is the client side: one function per endpoint, using `useRequestFetch()`. It is for the user experience only and decides nothing.
 
+## 20. Presentation
+
+The layer registers default pages and `Identity*` components (`modules/presentation.ts`), which a host configures in its `nuxt.config.ts` under `identity`:
+
+| Page | Default path | Shows |
+|---|---|---|
+| `account` | `/account/groups` | The signed-in person's account state and groups; pausing, resuming, leaving and closing, which are theirs alone |
+| `group` | `/groups/:groupId` | A group, and the sections the person may see: members (with suspend and remove), invitations (confirm, refuse, revoke), join requests, pending changes; renaming, creating a child group, asking to join |
+| `invitation` | `/invitations/accept` | Accepting or declining an invitation. The token travels in the link's fragment (`#token`), which browsers never send to a server or in a `Referer` |
+| `change` | `/changes/:changeId` | A governance change: what it does, who asked, why, how it is decided, and the actions open to the person (approve or reject, withdraw, object) |
+
+`identity: { pages: { paths: { ... } } }` moves the pages (the group and change paths must keep `:groupId` and `:changeId`); `identity: { pages: { enabled: false } }` keeps the components without the pages; `identity: { presentation: false }` registers nothing. Every page is sent with `X-Frame-Options: DENY`, `Content-Security-Policy: frame-ancestors 'none'`, `Referrer-Policy: no-referrer` and `Cache-Control: no-store`, unless the host sets those headers itself.
+
+**What the pages decide: nothing.** They call `useIdentity()` and show what the server answers; every action is decided again on the server, and a refused section shows nothing. `useIdentity()` is the only way they reach the server, and they import only the contract (`tests/presentation.test.ts`).
+
+**Names.** Identity holds no names of people. `IdentityPersonName` shows a short label from the opaque identifier; a host replaces it with its own `IdentityPersonName` component (same `identityId` prop) that asks Profile, under Profile's disclosure rules. Group names come from Identity.
+
+**Text.** Every word comes from `presentation/messages.ts` (en-GB) through `useIdentityText()`. Hosts change wording or add locales in `app.config.ts` under `identity.messages`, set the locale with `NUXT_PUBLIC_IDENTITY_LOCALE`, and point `identity.routes.signIn` (`NUXT_PUBLIC_IDENTITY_ROUTES_SIGN_IN`) at their sign-in page, to which the pages link with `?redirect=`. Conflicts and validation failures are explained from the error's `reason` (`identity.reason.*`), otherwise from its code.
+
+**Styling.** The pages style only through Theme Manager's SemanticPresentationTheme vocabulary (`identityClasses`), its public `presentation.css` and its size scales, never raw colours or Tailwind's default sizes; a host imports `@nuxt4-layers/identity/tailwind.css` after Theme Manager's stylesheet. Fill, Pen and Edge of one surface share role and state. The deliberate exceptions, which a host's theme must keep legible:
+
+- `pen-muted-default` on `fill-base-default`: hints, notes and definition terms on the card;
+- `edge-error-default` on `fill-input-default`: an invalid field's border;
+- `edge-base-active` on `fill-base-default`: the keyboard focus indicator.
+
+**Accessibility.** WCAG 2.2 AA: landmarks and one `h1` per page, labelled sections and fields, errors announced and focused, status messages announced politely, keyboard operation throughout, 24-pixel targets, reflow at 320 CSS pixels. Browser tests (`tests/e2e/pages.spec.ts`) run axe's WCAG 2.2 AA rules and check non-text contrast with Theme Manager's real styles.
+
 ## 17. Versioning
 
 This is contract version 1, provided by package 0.1. Before 1.0, breaking changes are listed here and in the release notes. Reserved for later versions: further `pausing` values (`notice`, `approval`), identity-provider group-claim mapping (improvement register item 18), and the tenancy module's extraction.
@@ -431,3 +458,4 @@ Changes before 1.0:
 | 3b | `INVITATION_ACKNOWLEDGEMENT` answers acceptance and declining only; creating an invitation returns its token | Clarification |
 | 3c | `group.appoint-owner` is requestable; route `platform-operator`; approval decision `object`; `group.recovered` and `approval.held` events; `REAUTHENTICATION_MAX_AGE_SECONDS` | No |
 | 4 | `IdentitySubjectResolver` port; administration schemas (`selfViewSchema`, `groupViewSchema`, `groupMembersPageSchema`, `identityExportSchema`); `IdentityErrorBody.reason` | No |
+| 5 | `selfViewSchema` gains `groupNames` (the person's own groups); presentation entry points `./presentation` and `./tailwind.css` | No |

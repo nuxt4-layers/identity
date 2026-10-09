@@ -3,6 +3,7 @@ import { actorContextSchema } from './directory'
 import { groupSchema, lineageSchema } from './group'
 import { correlationIdSchema, identifierSchema, instantSchema } from './identifiers'
 import { identityExternalIdSchema, identitySchema } from './identity'
+import { storedSafeNameSchema } from './safe-names'
 import { EFFECTIVE_STATUSES, membershipSchema } from './membership'
 import type { IdentitySubject } from './ports'
 
@@ -38,6 +39,12 @@ export interface IdentitySubjectResolver {
 /** The signed-in identity's own view: its actor context and the groups it alone owns. */
 export const selfViewSchema = z.strictObject({
   actor: actorContextSchema,
+  /**
+   * The names of the groups in `actor.memberships`, for the person's own
+   * pages: they are members, so they may see them. Names never enter events
+   * or the ports other members use.
+   */
+  groupNames: z.array(z.strictObject({ groupId: identifierSchema, name: storedSafeNameSchema })).max(1000),
   /** Groups of which this identity is the last active owner (pausing orphans them; closure needs a decision). */
   lastOwnerOf: z.array(identifierSchema).max(1000),
 })

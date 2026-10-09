@@ -1,0 +1,222 @@
+/**
+ * The layer's own message catalogue (en-GB). Hosts change wording or add
+ * locales in `app.config.ts`: `identity: { messages: { 'en-GB': { ... }, 'cy-GB': { ... } } }`.
+ * `{name}` placeholders are replaced from the parameters passed to `t()`.
+ */
+export const IDENTITY_MESSAGES_EN_GB = {
+  // Shared
+  'identity.common.cancel': 'Cancel',
+  'identity.common.next': 'Next page',
+  'identity.common.previous': 'Previous page',
+  'identity.common.signIn': 'Sign in',
+  'identity.common.signInRequired': 'Sign in to see this page.',
+  'identity.person.label': 'Member {short}',
+
+  // Errors, by contract code
+  'identity.error.unauthenticated': 'Sign in to continue.',
+  'identity.error.forbidden': 'This is not available to you.',
+  'identity.error.insufficient-assurance': 'Sign in again to confirm it is you, then try again.',
+  'identity.error.validation-failed': 'Some of the details are not valid. Check them and try again.',
+  'identity.error.conflict': 'That cannot be done at the moment.',
+  'identity.error.rate-limited': 'Too many attempts. Wait a while and try again.',
+  'identity.error.unavailable': 'Something went wrong. Try again later.',
+
+  // Errors, by the rule behind a conflict or validation failure
+  'identity.reason.last-owner': 'A group needs at least one active owner. Appoint another owner first.',
+  'identity.reason.self-grant': 'You cannot grant this to yourself. Someone else must request it.',
+  'identity.reason.forbidden-character': 'The name contains a character that is not allowed.',
+  'identity.reason.too-long': 'The name is too long.',
+  'identity.reason.empty': 'Enter a name.',
+  'identity.reason.mixed-script': 'Use one writing system in the name.',
+  'identity.reason.already-member': 'You are already a member of this group.',
+  'identity.reason.joining-closed': 'This group does not take requests to join.',
+  'identity.reason.own-request': 'You cannot decide your own request.',
+  'identity.reason.own-acceptance': 'You cannot confirm your own acceptance.',
+  'identity.reason.not-pending': 'This is no longer waiting for a decision.',
+  'identity.reason.change-differs': 'The change has altered since you saw it. Reload and check it again.',
+  'identity.reason.already-decided': 'You have already decided this change.',
+
+  // States
+  'identity.state.active': 'Active',
+  'identity.state.paused': 'Paused',
+  'identity.state.suspended': 'Suspended',
+  'identity.state.closure-pending': 'Closing',
+  'identity.state.closed': 'Closed',
+  'identity.status.active': 'Active',
+  'identity.status.paused': 'Paused',
+  'identity.status.suspended': 'Suspended',
+  'identity.status.ended': 'Ended',
+  'identity.status.not-started': 'Not started',
+  'identity.groupState.active': 'Active',
+  'identity.groupState.orphaned': 'Without an owner',
+  'identity.groupState.archived': 'Archived',
+  'identity.invitationState.open': 'Waiting',
+  'identity.invitationState.awaiting-confirmation': 'Accepted, needs confirmation',
+  'identity.invitationState.accepted': 'Accepted',
+  'identity.invitationState.refused': 'Refused',
+  'identity.invitationState.declined': 'Declined',
+  'identity.invitationState.revoked': 'Revoked',
+  'identity.invitationState.expired': 'Expired',
+
+  // Account
+  'identity.account.title': 'Your groups and account',
+  'identity.account.stateTitle': 'Your account',
+  'identity.account.state': 'Account status:',
+  'identity.account.pausedNotice': 'Your account is paused. Groups see you as away, and you receive nothing from them until you resume.',
+  'identity.account.closingNotice': 'Your account is due to close. You can cancel this until it closes.',
+  'identity.account.pause': 'Pause my account',
+  'identity.account.pauseExplained': 'Pausing signs you out everywhere else, and every group sees you as away until you resume. No group can stop you pausing.',
+  'identity.account.lastOwnerWarning': 'You are the only active owner of {count} group(s). While you are paused, nobody can manage them.',
+  'identity.account.confirmPause': 'Pause my account',
+  'identity.account.paused': 'Your account is paused.',
+  'identity.account.resume': 'Resume my account',
+  'identity.account.resumed': 'Your account is active again.',
+  'identity.account.groupsTitle': 'Your groups',
+  'identity.account.noGroups': 'You are not a member of any group yet.',
+  'identity.account.closeTitle': 'Close your account',
+  'identity.account.closeExplained': 'Your account closes after a grace period, during which you can cancel. When it closes, you leave every group.',
+  'identity.account.closeLastOwner': 'You are the only active owner of {count} group(s). Appoint another owner first, or leave them for recovery.',
+  'identity.account.leaveOrphaned': 'Leave these groups without an owner, for recovery',
+  'identity.account.close': 'Close my account',
+  'identity.account.confirmClose': 'Close my account after the grace period',
+  'identity.account.closureRequested': 'Your account will close at the end of the grace period.',
+  'identity.account.cancelClosure': 'Keep my account',
+  'identity.account.closureCancelled': 'Your account will not close.',
+
+  // Memberships
+  'identity.membership.owner': 'Owner',
+  'identity.membership.guest': 'Guest',
+  'identity.membership.kind.member': 'Member',
+  'identity.membership.kind.guest': 'Guest',
+  'identity.membership.pause': 'Pause',
+  'identity.membership.paused': 'Your membership is paused.',
+  'identity.membership.resume': 'Resume',
+  'identity.membership.resumed': 'Your membership is active again.',
+  'identity.membership.leave': 'Leave',
+  'identity.membership.confirmLeave': 'Leave {group}',
+  'identity.membership.left': 'You have left the group.',
+
+  // Groups
+  'identity.group.title': 'Group',
+  'identity.group.unnamed': 'A group',
+  'identity.group.state': 'Status',
+  'identity.group.parent': 'Part of',
+  'identity.group.parentLink': 'The group above',
+  'identity.group.root': 'A top-level group',
+  'identity.group.identifier': 'Identifier',
+  'identity.group.orphanedNotice': 'This group has no active owner. It can be managed again once an owner is appointed through recovery.',
+  'identity.group.rename': 'Rename',
+  'identity.group.newName': 'New name',
+  'identity.group.nameHint': 'Up to 100 characters, in one writing system. Avoid naming a person.',
+  'identity.group.saveName': 'Save name',
+  'identity.group.renamed': 'The group has been renamed.',
+  'identity.group.childTitle': 'Create a group within this one',
+  'identity.group.childName': 'Name of the new group',
+  'identity.group.createChild': 'Create group',
+  'identity.group.joinExplained': 'If you are in this organisation, you can ask to join this group.',
+  'identity.group.join': 'Ask to join',
+  'identity.group.joined': 'You have joined the group.',
+  'identity.group.requested': 'Your request has been sent to the group.',
+
+  // Members
+  'identity.members.title': 'Members',
+  'identity.members.manage': 'Manage',
+  'identity.members.reasonCode': 'Reason code',
+  'identity.members.reasonHint': 'A short code such as conduct or left-organisation.',
+  'identity.members.suspend': 'Suspend',
+  'identity.members.remove': 'Remove',
+
+  // Invitations
+  'identity.invitations.title': 'Invitations',
+  'identity.invitations.acceptedBy': 'Accepted by',
+  'identity.invitations.confirm': 'Confirm',
+  'identity.invitations.refuse': 'Refuse',
+  'identity.invitations.revoke': 'Revoke',
+  'identity.invitation.title': 'Invitation',
+  'identity.invitation.explained': 'You have been invited to join a group.',
+  'identity.invitation.accept': 'Accept invitation',
+  'identity.invitation.decline': 'Decline',
+  'identity.invitation.acceptedNotice': 'Thank you. If the invitation was still open, you have joined, or the group will confirm your place.',
+  'identity.invitation.declinedNotice': 'Thank you. If the invitation was still open, it has been declined.',
+  'identity.invitation.toAccount': 'Go to your groups',
+  'identity.invitation.noToken': 'Open the link from your invitation to respond to it.',
+
+  // Join requests
+  'identity.joinRequests.title': 'Requests to join',
+  'identity.joinRequests.approve': 'Approve',
+  'identity.joinRequests.refuse': 'Refuse',
+
+  // Governance changes
+  'identity.changes.title': 'Changes waiting for a decision',
+  'identity.change.title': 'Change',
+  'identity.change.state': 'Status',
+  'identity.change.group': 'Group',
+  'identity.change.groupLink': 'Open the group',
+  'identity.change.requester': 'Requested by',
+  'identity.change.beneficiary': 'For',
+  'identity.change.risk': 'Risk',
+  'identity.change.reason': 'Reason',
+  'identity.change.route': 'Decided by',
+  'identity.change.appliesAt': 'Takes effect',
+  'identity.change.expiresAt': 'Expires',
+  'identity.change.digest': 'Fingerprint',
+  'identity.change.approve': 'Approve',
+  'identity.change.approved': 'Your approval has been recorded.',
+  'identity.change.reject': 'Reject',
+  'identity.change.rejected': 'The change has been rejected.',
+  'identity.change.object': 'Object',
+  'identity.change.objected': 'Your objection has been recorded. A platform operator will decide.',
+  'identity.change.cancel': 'Withdraw',
+  'identity.change.cancelled': 'The change has been withdrawn.',
+  'identity.change.serverDecides': 'Whether you may act on this is checked again when you do.',
+  'identity.changeState.awaiting-approval': 'Waiting for approval',
+  'identity.changeState.delayed': 'Waiting for its published delay',
+  'identity.changeState.applied': 'Applied',
+  'identity.changeState.rejected': 'Rejected',
+  'identity.changeState.expired': 'Expired',
+  'identity.changeState.cancelled': 'Withdrawn',
+  'identity.changeType.group.create-root': 'Create a top-level group',
+  'identity.changeType.group.reparent': 'Move a group',
+  'identity.changeType.group.archive': 'Archive a group',
+  'identity.changeType.group.change-settings': 'Change group settings',
+  'identity.changeType.group.change-approvals': 'Change approval requirements',
+  'identity.changeType.group.add-owner': 'Add an owner',
+  'identity.changeType.group.remove-owner': 'Remove an owner',
+  'identity.changeType.group.suspend-owner': 'Suspend an owner',
+  'identity.changeType.group.appoint-owner': 'Appoint an owner to a group without one',
+  'identity.changeType.membership.reinstate': 'Reinstate a member',
+  'identity.changeType.membership.schedule': 'Change membership dates',
+  'identity.changeType.identity.suspend': 'Suspend an account',
+  'identity.changeType.identity.reinstate': 'Reinstate an account',
+  'identity.changeType.service-identity.create': 'Create a service account',
+  'identity.risk.low': 'Low',
+  'identity.risk.medium': 'Medium',
+  'identity.risk.high': 'High',
+  'identity.risk.critical': 'Critical',
+  'identity.route.approvers': '{count} approver(s) in the group',
+  'identity.route.parent-owner': 'An owner of the group above',
+  'identity.route.tenant-owner': 'An owner of the top-level group',
+  'identity.route.published-delay': 'Nobody: it takes effect after a published delay unless withdrawn',
+  'identity.route.platform-operator': 'A platform operator, after an objection',
+  'identity.route.none': 'No approver needed',
+} as const
+
+export type IdentityMessageKey = keyof typeof IDENTITY_MESSAGES_EN_GB
+export type IdentityMessages = Partial<Record<IdentityMessageKey, string>>
+
+export function formatMessage(template: string, params: Record<string, string | number> = {}): string {
+  return template.replace(/\{(\w+)\}/g, (match, name: string) => (name in params ? String(params[name]) : match))
+}
+
+/** Resolves a message for a locale: host override, then the en-GB default, then the key itself. */
+export function resolveMessage(
+  key: string,
+  locale: string,
+  overrides: Record<string, IdentityMessages | undefined> | undefined,
+  params?: Record<string, string | number>,
+): string {
+  const template = overrides?.[locale]?.[key as IdentityMessageKey]
+    ?? (IDENTITY_MESSAGES_EN_GB as Record<string, string>)[key]
+    ?? key
+  return formatMessage(template, params)
+}

@@ -156,3 +156,17 @@ Taken while building phase 4, within the decisions above, for the project owner'
 | Error detail | `IdentityErrorBody` gains `reason`, the rule as a code, for `conflict` and `validation-failed` only, so pages can say why without guessing; `forbidden` never carries one |
 | CSRF | As Authentication: the `Origin` or `Referer` must match the configured base URL, and without one configured every state-changing request is refused |
 | Runtime dependencies | Still zod alone: `h3` is Nuxt's, which the host already has; it is a development dependency here for tests and type-checking |
+
+## 15. Phase 5 decisions
+
+The project owner asked to use Theme Manager's current commit, `934d1bd` (0.2.1 with a documentation change). Taken while building phase 5, for the project owner's review:
+
+| Question | Decision |
+|---|---|
+| How the pages look and behave | As Authentication's: the same SemanticPresentationTheme rules, Fill, Pen and Edge pairing tests, Theme Manager scales, message catalogue, presentation module options and browser tests, so the suite's pages are alike |
+| Who is signed in, without Authentication | The pages call the endpoints, which ask the host's subject resolver. Signed out, they link to the host's sign-in page (`identity.routes.signIn`) with `?redirect=`; they never import Authentication's middleware |
+| People's names | Identity has none. `IdentityPersonName` shows a short label from the identifier, and a host overrides the component with one backed by Profile. The person's own view now carries their groups' names, which members may see; names still never enter events or other members' ports |
+| Invitation links | The token in the fragment (`/invitations/accept#token`), not the query: browsers do not send fragments to servers or in `Referer`, so it never reaches logs |
+| Inviting someone | Still the host's own form (§14): the pages list, confirm, refuse and revoke invitations, but never take an address |
+| Runtime dependencies | Still zod alone. The module uses `nuxt/kit` from the host's Nuxt; Theme Manager, Tailwind and Playwright are development dependencies, and Theme Manager is declared an optional capability: without it the pages are unstyled but work |
+| Installing Theme Manager | From GitHub at the pinned commit, as Authentication does. This environment cannot reach GitHub's archive host, so the lockfile's entry for it was written in the same form as Authentication's, and CI's frozen install verifies it |

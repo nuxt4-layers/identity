@@ -14,7 +14,7 @@ A Nuxt 4 foundation layer that answers one question for the rest of the platform
 
 Part of the `nuxt4-layers` Identity and Access Management (IAM) suite, with [`authentication`](https://github.com/nuxt4-layers/authentication), [`profile`](https://github.com/nuxt4-layers/profile), [`authorisation`](https://github.com/nuxt4-layers/authorisation) and [`iam-integration`](https://github.com/nuxt4-layers/iam-integration).
 
-**Status:** phase 4 of 6. The contract, conformance suite, composition ports, PostgreSQL storage with row-level security, the outbox, provisioning, the directory and disclosure-context ports, child groups, membership changes, the governance approvals engine, invitations, join requests, the identity lifecycle, orphaned-group recovery, the recovery hold, break-glass and the `/api/identity/*` administration endpoints are in place; default pages and host integration follow (see [docs/roadmap.md](docs/roadmap.md)).
+**Status:** phase 5 of 6. The contract, conformance suite, composition ports, PostgreSQL storage with row-level security, the outbox, provisioning, the directory and disclosure-context ports, child groups, membership changes, the governance approvals engine, invitations, join requests, the identity lifecycle, orphaned-group recovery, the recovery hold, break-glass the `/api/identity/*` administration endpoints and accessible default pages are in place; host integration follows (see [docs/roadmap.md](docs/roadmap.md)).
 
 ## Owns
 
@@ -79,6 +79,15 @@ export default defineNitroPlugin(async () => {
 ```
 
 Set `NUXT_IDENTITY_BASE_URL` to the host's public origin: state-changing `/api/identity/*` requests must come from it. Pages call the endpoints through `useIdentity()`.
+
+The default pages (`/account/groups`, `/groups/:groupId`, `/invitations/accept`, `/changes/:changeId`) are styled with [Theme Manager](https://github.com/nuxt4-layers/theme-manager)'s semantic vocabulary. Import its stylesheet and the layer's sources into the host's Tailwind stylesheet:
+
+```css
+@import "@nuxt4-layers/theme-manager/presentation.css";
+@import "@nuxt4-layers/identity/tailwind.css";
+```
+
+Move or turn off the pages with `identity: { pages: { ... } }` in `nuxt.config.ts`, and override `IdentityPersonName` to show names from Profile.
 
 The operator provisions tenants and each tenant's first root group with the migration pool, from a server-only procedure: `provisionIdentityTenant({ pool: migrationPool, ... })` and `bootstrapIdentityRootGroup({ pool: migrationPool, ... })`. Every other governance change goes through `getIdentityApprovals()`.
 

@@ -1,3 +1,6 @@
+onlyBuiltDependencies:
+  - "@nuxt4-layers/theme-manager"
+
 # Supply-chain hardening (docs/threat-model.md T12).
 # Resolve only versions published at least a day ago; most malicious releases
 # are detected and pulled within hours.

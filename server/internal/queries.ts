@@ -91,7 +91,15 @@ export function createQueries({ db, access, clock = systemClock }: QueriesDepend
         `select ${db.schema}.last_owner_of($1)::text[] as groups`,
         [subject.principalId],
       ), { at: clock.now() })
-      return selfViewSchema.parse({ actor, lastOwnerOf: rows[0]?.groups ?? [] })
+      const tenantIds = [...new Set(actor.memberships.map(membership => membership.group.tenantId))]
+      const groupIds = actor.memberships.map(membership => membership.group.groupId)
+      const names = groupIds.length === 0
+        ? []
+        : (await db.transaction(client => client.query<{ groupId: string, name: string }>(
+            `select group_id::text as "groupId", name from ${db.schema}."group" where group_id = any ($1::uuid[]) and kind = 'standard' order by name, group_id`,
+            [groupIds],
+          ), { tenantIds })).rows
+      return selfViewSchema.parse({ actor, groupNames: names, lastOwnerOf: rows[0]?.groups ?? [] })
     },
 
     /** A group, its settings and lineage (`identity.groups:view`). */

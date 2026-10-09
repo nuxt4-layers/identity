@@ -13,19 +13,21 @@ describe('Identity repository foundation', () => {
     expect(manifest.classification).toBe('foundation')
   })
 
-  it('publishes deliberate root, contracts, conformance and capability entry points', () => {
+  it('publishes deliberate root, contracts, conformance, capability and presentation entry points', () => {
     expect(pkg.exports).toEqual({
       '.': './nuxt.config.ts',
       './contracts': './contracts/index.ts',
       './conformance': './conformance/index.ts',
       './capability': './capability.json',
+      './presentation': './presentation/index.ts',
+      './tailwind.css': './tailwind.css',
     })
     expect(manifest.publicExports).toEqual(Object.keys(pkg.exports))
   })
 
   it('provides the Identity contract and requires Authorisation and Authentication by contract only', () => {
     expect(manifest.provides).toEqual([{ capability: 'Identity', contractVersion: '1' }])
-    expect(manifest.requires.map((r: { capability: string }) => r.capability)).toEqual(['Authorisation', 'Authentication'])
+    expect(manifest.requires.map((r: { capability: string }) => r.capability)).toEqual(['Authorisation', 'Authentication', 'SemanticPresentationTheme'])
     expect(Object.keys(pkg.dependencies ?? {}).filter(name => name.startsWith('@nuxt4-layers/'))).toEqual([])
   })
 

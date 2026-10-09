@@ -26,7 +26,7 @@ jobs:
 
   layer:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
     services:
       postgres:
         # Disposable database for the database suites (ADR-0002); never a hosted one.
@@ -55,6 +55,15 @@ jobs:
       - run: pnpm dev:prepare
       - run: pnpm check
       - run: pnpm build:playground
+      # The default pages in a real browser, with axe WCAG 2.2 AA checks.
+      - run: pnpm exec playwright install --with-deps chromium
+      - run: pnpm exec playwright test
+      - if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: playwright-results
+          path: test-results/
+          retention-days: 7
 
   # Gate for the `quality` status check that the master ruleset requires of
   # every repository. It passes only when every check above has passed.
