@@ -301,6 +301,242 @@ grant execute on function
 to {{runtime}};
 `,
   },
+  {
+    id: '0002_groups_memberships_disclosure',
+    sql: `
+-- Request context ---------------------------------------------------------
+-- Database.transaction sets these transaction-local values; triggers read
+-- them so that every event carries the request's correlation identifier
+-- and actor without the runtime role ever touching the outbox.
+
+create function {{schema}}.context_uuid(p_name text) returns uuid language sql stable as $$
+  select nullif(current_setting(p_name, true), '')::uuid
+$$;
+
+create function {{schema}}.context_at() returns timestamptz language sql stable as $$
+  select coalesce(nullif(current_setting('identity.at', true), '')::timestamptz, now())
+$$;
+
+-- Confusable sibling names (safe names, improvement register item 6) -----
+
+alter table {{schema}}."group" add column name_skeleton text;
+alter table {{schema}}."group" add constraint group_skeleton_with_name check ((name is null) = (name_skeleton is null));
+create unique index group_sibling_skeleton_idx on {{schema}}."group"
+  (tenant_id, coalesce(parent_group_id, '00000000-0000-0000-0000-000000000000'::uuid), name_skeleton) where name_skeleton is not null;
+
+-- Versions and the hierarchy, enforced in the database as well -------------
+
+create function {{schema}}.bump_version() returns trigger language plpgsql as $$
+begin
+  new.version := old.version + 1;
+  return new;
+end $$;
+
+create trigger group_version before update on {{schema}}."group" for each row execute function {{schema}}.bump_version();
+create trigger membership_version before update on {{schema}}.membership for each row execute function {{schema}}.bump_version();
+
+create function {{schema}}.check_hierarchy() returns trigger language plpgsql security definer set search_path = pg_catalog, pg_temp as $$
+declare v_parent {{schema}}."group"%rowtype; v_lineage uuid[];
+begin
+  if new.parent_group_id is null then return new; end if;
+  select * into v_parent from {{schema}}."group" where group_id = new.parent_group_id;
+  if v_parent.tenant_id is distinct from new.tenant_id then raise exception 'identity:hierarchy-tenant'; end if;
+  if v_parent.kind <> 'standard' then raise exception 'identity:hierarchy-parent'; end if;
+  v_lineage := {{schema}}.lineage_of(new.parent_group_id);
+  if new.group_id = any (v_lineage) then raise exception 'identity:hierarchy-cycle'; end if;
+  if cardinality(v_lineage) + 1 > 32 then raise exception 'identity:hierarchy-depth'; end if;
+  return new;
+end $$;
+
+create trigger group_hierarchy before insert or update of parent_group_id, tenant_id on {{schema}}."group"
+  for each row execute function {{schema}}.check_hierarchy();
+
+-- Limits on the runtime role's direct writes --------------------------------
+-- Defence in depth: only the table owner (migrations and SECURITY DEFINER
+-- functions) may create root or personal groups, or memberships that confer
+-- ownership, except the founding owner of a group created in this request.
+
+create function {{schema}}.is_owner_role() returns boolean language sql stable as $$
+  select current_user = (select pg_get_userbyid(c.relowner) from pg_class c where c.oid = '{{schema}}."group"'::regclass)
+$$;
+
+create function {{schema}}.guard_group_insert() returns trigger language plpgsql as $$
+begin
+  if {{schema}}.is_owner_role() then return new; end if;
+  if new.kind <> 'standard' or new.parent_group_id is null or new.state <> 'active' or new.external_id is not null then
+    raise exception 'identity:requires-approval';
+  end if;
+  return new;
+end $$;
+
+create trigger group_guard before insert on {{schema}}."group" for each row execute function {{schema}}.guard_group_insert();
+
+create function {{schema}}.guard_membership_insert() returns trigger language plpgsql as $$
+begin
+  if {{schema}}.is_owner_role() then return new; end if;
+  if new.owner or new.founding_owner then
+    if not (new.owner and new.founding_owner and new.kind = 'member' and new.state = 'active'
+      and not exists (select 1 from {{schema}}.membership m where m.group_id = new.group_id)
+      and exists (select 1 from {{schema}}."group" g where g.group_id = new.group_id and g.xmin = pg_current_xact_id()::xid)) then
+      raise exception 'identity:requires-approval';
+    end if;
+  end if;
+  return new;
+end $$;
+
+create trigger membership_guard before insert on {{schema}}.membership for each row execute function {{schema}}.guard_membership_insert();
+
+-- Events from row changes ---------------------------------------------------
+
+create function {{schema}}.group_events() returns trigger language plpgsql security definer set search_path = pg_catalog, pg_temp as $$
+declare
+  v_correlation uuid := {{schema}}.context_uuid('identity.correlation_id');
+  v_actor uuid := {{schema}}.context_uuid('identity.actor_id');
+  v_at timestamptz := {{schema}}.context_at();
+  v_changed jsonb;
+begin
+  if new.kind = 'personal' then return new; end if;
+  if v_correlation is null then raise exception 'identity:correlation-required'; end if;
+  if tg_op = 'INSERT' then
+    if v_actor is null then raise exception 'identity:actor-required'; end if;
+    perform {{schema}}.enqueue_event('group.created', v_actor, 'group', new.group_id, new.version, new.tenant_id, v_correlation, v_at,
+      jsonb_build_object('groupId', new.group_id, 'lineage', to_jsonb({{schema}}.lineage_of(new.group_id)), 'foundingOwnerId', v_actor));
+    return new;
+  end if;
+  if new.name is distinct from old.name then
+    perform {{schema}}.enqueue_event('group.renamed', v_actor, 'group', new.group_id, new.version, new.tenant_id, v_correlation, v_at,
+      jsonb_build_object('groupId', new.group_id));
+  end if;
+  if new.settings is distinct from old.settings then
+    select coalesce(jsonb_agg(k order by k), '[]'::jsonb) into v_changed
+    from jsonb_object_keys(new.settings) k where new.settings -> k is distinct from old.settings -> k;
+    if jsonb_array_length(v_changed) > 0 then
+      perform {{schema}}.enqueue_event('group.settings-changed', v_actor, 'group', new.group_id, new.version, new.tenant_id, v_correlation, v_at,
+        jsonb_build_object('groupId', new.group_id, 'changed', v_changed));
+    end if;
+  end if;
+  return new;
+end $$;
+
+create trigger group_events after insert or update on {{schema}}."group" for each row execute function {{schema}}.group_events();
+
+create function {{schema}}.membership_events() returns trigger language plpgsql security definer set search_path = pg_catalog, pg_temp as $$
+declare
+  v_correlation uuid := {{schema}}.context_uuid('identity.correlation_id');
+  v_actor uuid := {{schema}}.context_uuid('identity.actor_id');
+  v_at timestamptz := {{schema}}.context_at();
+  v_base jsonb := jsonb_build_object('membershipId', new.membership_id, 'identityId', new.identity_id, 'groupId', new.group_id);
+  v_type text;
+  v_data jsonb;
+begin
+  -- A personal group's membership follows its identity; provisioning announces it.
+  if exists (select 1 from {{schema}}."group" g where g.group_id = new.group_id and g.kind = 'personal') then return new; end if;
+  if v_correlation is null then raise exception 'identity:correlation-required'; end if;
+  if tg_op = 'INSERT' then
+    v_type := 'membership.added';
+    v_data := v_base || jsonb_build_object('kind', new.kind, 'owner', new.owner, 'startsAt', {{schema}}.iso(new.starts_at), 'endsAt', {{schema}}.iso(new.ends_at));
+  elsif new.state is distinct from old.state then
+    if new.state = 'ended' then
+      v_type := 'membership.ended';
+      v_data := v_base || jsonb_build_object('endReason', new.end_reason, 'reasonCode', new.reason_code);
+    elsif new.state = 'paused' then
+      v_type := 'membership.paused'; v_data := v_base;
+    elsif new.state = 'suspended' then
+      v_type := 'membership.suspended';
+      v_data := v_base || jsonb_build_object('reasonCode', new.reason_code, 'changeId', null, 'breakGlassReviewId', null);
+    elsif old.state = 'paused' then
+      v_type := 'membership.resumed'; v_data := v_base;
+    else
+      v_type := 'membership.reinstated'; v_data := v_base || jsonb_build_object('changeId', null);
+    end if;
+  elsif new.starts_at is distinct from old.starts_at or new.ends_at is distinct from old.ends_at then
+    v_type := 'membership.dates-changed';
+    v_data := v_base || jsonb_build_object('startsAt', {{schema}}.iso(new.starts_at), 'endsAt', {{schema}}.iso(new.ends_at));
+  else
+    return new;
+  end if;
+  perform {{schema}}.enqueue_event(v_type, v_actor, 'membership', new.membership_id, new.version, new.tenant_id, v_correlation, v_at, v_data);
+  return new;
+end $$;
+
+create trigger membership_events after insert or update on {{schema}}.membership for each row execute function {{schema}}.membership_events();
+
+-- Port and lookup functions (SECURITY DEFINER) -------------------------------
+
+-- Where a membership lives, and what governance needs to know about it.
+create function {{schema}}.locate_membership(p_membership uuid)
+returns jsonb language sql stable security definer set search_path = pg_catalog, pg_temp as $$
+  select jsonb_build_object(
+    'membershipId', m.membership_id, 'identityId', m.identity_id, 'groupId', m.group_id, 'tenantId', m.tenant_id,
+    'groupKind', g.kind, 'groupState', g.state, 'state', m.state, 'kind', m.kind, 'owner', m.owner,
+    'otherActiveOwners', (select count(*) from {{schema}}.membership o join {{schema}}.identity oi on oi.identity_id = o.identity_id
+      where o.group_id = m.group_id and o.owner and o.state = 'active' and o.membership_id <> m.membership_id and oi.state = 'active'))
+  from {{schema}}.membership m join {{schema}}."group" g on g.group_id = m.group_id
+  where m.membership_id = p_membership
+$$;
+
+-- Lapsed memberships: recorded ended (expired) once past their end date.
+create function {{schema}}.sweep_lapsed_memberships(p_correlation uuid, p_at timestamptz, p_limit integer)
+returns integer language plpgsql volatile security definer set search_path = pg_catalog, pg_temp as $$
+declare n integer;
+begin
+  perform set_config('identity.correlation_id', p_correlation::text, true);
+  perform set_config('identity.actor_id', '', true);
+  perform set_config('identity.at', p_at::text, true);
+  with lapsed as (
+    select membership_id from {{schema}}.membership
+    where state <> 'ended' and ends_at is not null and ends_at <= p_at
+    order by ends_at limit p_limit for update skip locked
+  )
+  update {{schema}}.membership m set state = 'ended', ended_at = p_at, end_reason = 'expired'
+  from lapsed where m.membership_id = lapsed.membership_id;
+  get diagnostics n = row_count;
+  return n;
+end $$;
+
+-- Facts for the disclosure-context port: the viewer's memberships, and each
+-- subject's state and memberships in the viewer's groups and tenants only.
+create function {{schema}}.disclosure_facts(p_viewer uuid, p_subjects uuid[], p_group uuid)
+returns jsonb language sql stable security definer set search_path = pg_catalog, pg_temp as $$
+  with viewer as (
+    select m.group_id, m.tenant_id, m.state, m.starts_at, m.ends_at
+    from {{schema}}.membership m join {{schema}}."group" g on g.group_id = m.group_id
+    where m.identity_id = p_viewer and g.kind = 'standard' and m.state <> 'ended'
+  )
+  select jsonb_build_object(
+    'viewerState', (select i.state from {{schema}}.identity i where i.identity_id = p_viewer),
+    'viewer', coalesce((select jsonb_agg(jsonb_build_object('groupId', v.group_id, 'tenantId', v.tenant_id, 'state', v.state,
+      'startsAt', {{schema}}.iso(v.starts_at), 'endsAt', {{schema}}.iso(v.ends_at))) from viewer v), '[]'::jsonb),
+    'departurePolicy', (select g.settings -> 'departure' from {{schema}}."group" g where g.group_id = p_group and g.kind = 'standard'),
+    'subjects', coalesce((select jsonb_agg(jsonb_build_object(
+      'subjectId', s.id,
+      'state', (select i.state from {{schema}}.identity i where i.identity_id = s.id),
+      'memberships', coalesce((select jsonb_agg(jsonb_build_object('groupId', m.group_id, 'tenantId', m.tenant_id, 'kind', m.kind,
+          'state', m.state, 'startsAt', {{schema}}.iso(m.starts_at), 'endsAt', {{schema}}.iso(m.ends_at), 'endedAt', {{schema}}.iso(m.ended_at)))
+        from {{schema}}.membership m join {{schema}}."group" g on g.group_id = m.group_id
+        where m.identity_id = s.id and g.kind = 'standard'
+          and (m.group_id = p_group or m.tenant_id in (select v.tenant_id from viewer v))), '[]'::jsonb)))
+      from unnest(p_subjects) as s(id)), '[]'::jsonb))
+$$;
+
+-- Privileges ----------------------------------------------------------------
+
+revoke all on all functions in schema {{schema}} from public;
+grant insert on {{schema}}."group", {{schema}}.membership to {{runtime}};
+-- Only the columns phase 2b changes; owners, settings, states of groups and
+-- membership dates change through the approvals of phase 3.
+grant update (name, name_skeleton) on {{schema}}."group" to {{runtime}};
+grant update (state, ended_at, end_reason, reason_code) on {{schema}}.membership to {{runtime}};
+grant execute on function
+  {{schema}}.current_tenant_ids(),
+  {{schema}}.is_owner_role(),
+  {{schema}}.uuid_v7(),
+  {{schema}}.locate_membership(uuid),
+  {{schema}}.sweep_lapsed_memberships(uuid, timestamptz, integer),
+  {{schema}}.disclosure_facts(uuid, uuid[], uuid)
+to {{runtime}};
+`,
+  },
 ]
 
 const IDENTIFIER_PATTERN = /^[a-z_][a-z0-9_]{0,62}$/

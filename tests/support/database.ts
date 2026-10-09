@@ -85,3 +85,26 @@ export function breakablePool(pool: pg.Pool) {
     restore() { broken = false },
   }
 }
+
+/**
+ * Runs fixture statements as the migration role in one transaction, with the
+ * request context the triggers require (a correlation identifier and an
+ * actor), as the layer's own transactions set it.
+ */
+export async function seed(pool: pg.Pool, statements: ReadonlyArray<[string, unknown[]?]>, actorId: string = '01a120c9-2cd1-784a-a3d6-f725b2cb2eab'): Promise<void> {
+  const client = await pool.connect()
+  try {
+    await client.query('begin')
+    await client.query(`select set_config('identity.correlation_id', $1, true), set_config('identity.actor_id', $2, true)`, ['01a120c9-2cd1-784a-a3d6-f725b2cb2eac', actorId])
+    for (const [text, values] of statements) await client.query(text, values as unknown[])
+    await client.query('commit')
+  }
+  catch (error) {
+    await client.query('rollback')
+    throw error
+  }
+  finally {
+    client.release()
+  }
+}
+
