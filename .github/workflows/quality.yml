@@ -30,7 +30,9 @@ jobs:
     services:
       postgres:
         # Disposable database for the database suites (ADR-0002); never a hosted one.
-        image: postgres:16-alpine
+        # AWS ECR Public mirror of the official image: Docker Hub rate-limits
+        # anonymous pulls from shared runners.
+        image: public.ecr.aws/docker/library/postgres:16-alpine
         env:
           POSTGRES_PASSWORD: postgres
         ports:
