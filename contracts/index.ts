@@ -205,7 +205,7 @@ export { SCIM_GROUP_SCHEMA, SCIM_USER_SCHEMA, scimActive, scimGroupStructureSche
 
 // Errors
 export type { IdentityErrorBody, IdentityErrorCode } from '../shared/errors'
-export { IDENTITY_ERROR_CODES, IDENTITY_ERROR_STATUS, IdentityCompositionError, isIdentityErrorCode } from '../shared/errors'
+export { IDENTITY_ERROR_CODES, IDENTITY_ERROR_STATUS, IdentityCompositionError, IdentityError, isIdentityErrorCode } from '../shared/errors'
 
 // Policy
 export type { IdentityPolicy, IdentityPolicyInput, IdentityPolicySetting } from '../shared/policy'

@@ -50,6 +50,9 @@ describe('identity states', () => {
   it('gives a person exactly one personal group, and other kinds none', () => {
     expect(identitySchema.safeParse(person()).success).toBe(true)
     expect(identitySchema.safeParse(person({ personalGroupId: null })).success).toBe(false)
+    expect(identitySchema.safeParse(person({ state: 'pending', personalGroupId: null })).success).toBe(true)
+    expect(identitySchema.safeParse(person({ state: 'pending' })).success).toBe(false)
+    expect(identitySchema.safeParse(person({ state: 'closed', personalGroupId: null })).success).toBe(true)
     expect(identitySchema.safeParse(person({ kind: 'break-glass' })).success).toBe(false)
     expect(identitySchema.safeParse(person({ kind: 'break-glass', personalGroupId: null })).success).toBe(true)
     expect(identitySchema.safeParse(person({ kind: 'service', personalGroupId: null })).success).toBe(false)

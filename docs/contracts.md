@@ -302,6 +302,21 @@ The policy also lists the `jurisdictions` and `dataRegions` the host supports an
 
 Identity supplies the structural part of SCIM 2.0 resources (improvement register item 5): `id`, `externalId` (per tenant for identities), `active` (true for `active` and `paused`), a group's `displayName` and `members`, and `meta` with a weak ETag from the aggregate version. `userName` comes from Authentication and `name` and `emails` from Profile; a SCIM endpoint composed by the host merges them.
 
+## 18. Server functions
+
+The host calls these on the server; none is an HTTP route. Each uses the supplied ports and fails closed (`IdentityCompositionError`) when one is missing.
+
+| Function | Purpose | Errors |
+|---|---|---|
+| `migrateIdentityDatabase({ pool, runtimeRole, schema? })` | Applies migrations with the **migration** pool, granting the runtime role only what it needs. Refuses a runtime role that is a superuser, has `BYPASSRLS` or is the migration role | Throws; nothing is applied |
+| `getIdentityProvisioning()` | The provisioning port (§10.1) | `validation-failed` (malformed input, unknown or inactive home tenant), `forbidden` (unknown identity), `conflict` (not pending, or past its confirmation window), `unavailable` |
+| `getIdentityDirectory()` | The directory port (§10.2). Always reads the source of truth | `unavailable`: the port rejects, never answers null for a failure |
+| `relayIdentityOutbox({ limit? })` | Publishes up to `limit` (default 100) outbox events in order, at least once. Returns `{ published, failed }` | `unavailable` |
+| `runIdentityMaintenance()` | Closes `pending` identities past their confirmation window, writing `identity.provisioning-expired`. Phase 2b adds the membership dates sweeper | `unavailable` |
+| `provisionIdentityTenant({ jurisdiction, dataRegion, externalId?, correlationId })` | The platform operator's tenant provisioning; the jurisdiction and region must be registered in the policy. Writes `tenant.created` | `validation-failed`, `unavailable` |
+
+`IdentityError` carries the contract code; its message is for the server log only.
+
 ## 17. Versioning
 
 This is contract version 1, provided by package 0.1. Before 1.0, breaking changes are listed here and in the release notes. Reserved for later versions: further `pausing` values (`notice`, `approval`), identity-provider group-claim mapping (improvement register item 18), and the tenancy module's extraction.

@@ -37,7 +37,11 @@ Identity has **no package dependency** on any other member, database vendor SDK 
 The host application:
 
 - selects a compatible version and pins it;
-- supplies a PostgreSQL pool through `provideIdentityDatabase` (required; used from phase 2);
+- creates two PostgreSQL roles: a **migration role** that owns the `identity` schema, and a **runtime role** that owns nothing, is not a superuser and does not have `BYPASSRLS`;
+- applies migrations at deployment with `migrateIdentityDatabase({ pool: migrationPool, runtimeRole })`, which refuses a runtime role that could bypass row-level security;
+- supplies the **runtime** pool through `provideIdentityDatabase` (required);
+- schedules `runIdentityMaintenance()` every few minutes and `relayIdentityOutbox({ limit })` frequently (every few seconds to a minute), from a Nitro scheduled task, a cron job or a queue. Both are idempotent and safe on several instances. Access never depends on them: states and dates are evaluated on every read. The playground's `server/tasks/identity/maintenance.ts` shows one way;
+- provisions tenants with `provisionIdentityTenant(...)` from the platform operator's procedure, never from an HTTP route;
 - supplies `provideIdentityAccessDecision` (required), adapting Authorisation's decision for Identity's permissions. It must reject on failure, never allow;
 - supplies `provideIdentityApprovalPolicy` (required), adapting Authorisation's catalogue risk levels and the principals who hold a permission in a group. Every read is `strong`;
 - supplies `provideIdentityEventPublisher` (required), the publishing end of its outbox relay;
@@ -84,11 +88,12 @@ Identity follows ADR-0002 and the [Data Store Security Standard v0.1](https://gi
 | Port | `provideIdentityDatabase({ dialect: 'postgres', pool, schema? })`, a `pg`-compatible pool |
 | Holds | Identities, external identifiers, tenants, groups, memberships, invitations (token digests only), group settings, pending changes, break-glass reviews, the outbox. System of record for all of them |
 | Classification | No personal data, no secrets, no credentials. Opaque identifiers, codes, instants, digests and group names |
-| Isolation | Tenant- and group-isolated rows carry `tenant_id`; row-level security reads the request's tenant from `SET LOCAL`; the runtime role neither owns the tables nor has `BYPASSRLS` (phase 2) |
+| Isolation | Tenant-isolated tables (`tenant`, `group`, `membership`, `identity_external_id`) carry `tenant_id` and use row-level security on the transaction-local `identity.tenant_ids`; with none set, the runtime role sees nothing. Tables that span tenants (`identity`, `outbox`, `provisioning_request`) are not granted to the runtime role: it reaches them only through SECURITY DEFINER functions with a fixed `search_path` that return exactly a port's answer. The runtime role neither owns anything nor has `BYPASSRLS` |
 | Erasure | Nothing to erase about a person: anonymisation is Profile's deletion of its record. A closed identity's identifier remains, referring to nobody the platform can name |
 | Rebuild | Not applicable: no derived copies. A host cache in front of the directory port must pass the conformance suite |
 
-- The host creates and owns the pool: credentials, TLS, pooling mode and lifecycle. Administrative (migration) credentials SHOULD be separate from runtime credentials.
+- The host creates and owns both pools: credentials, TLS, pooling mode and lifecycle. Migration credentials MUST be separate from runtime credentials and unavailable to request handling (Data Store Security Standard §2.5).
+- Transaction pooling (for example PgBouncer in transaction mode) is safe: the tenant setting is transaction-local and never outlives the transaction.
 - The layer reads and writes only its own schema, `identity` by default. A host may rename it to another lower-case PostgreSQL identifier.
 - No other capability reads the `identity` schema. Other members store Identity's identifiers as opaque values with no cross-schema foreign keys.
 - Migrations are applied before Authentication's, Profile's and Authorisation's (iam-integration architecture §6).
@@ -102,7 +107,9 @@ Identity follows ADR-0002 and the [Data Store Security Standard v0.1](https://gi
 | Invalid policy, or a loosening without a risk treatment | `TypeError` or a validation error from `provideIdentityPolicy` at startup |
 | Authorisation unreachable or failing | `unavailable` (503); the change is refused |
 | Database failure | `unavailable` (503); provided ports reject |
-| Event publisher failure | The event stays in the outbox and is retried; the committed change stands |
+| Event publisher failure | The event stays in the outbox and is retried; the committed change stands. Later events wait for the next run, so each aggregate's order is kept |
+| Outbox event that does not match the contract | Never published; logged by sequence number (no payload) for an operator to inspect |
+| Runtime role that can bypass row-level security, or is the migration role | `migrateIdentityDatabase` refuses to run |
 
 ## 8. Composed-system verification
 

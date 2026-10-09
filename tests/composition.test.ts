@@ -13,6 +13,13 @@ import {
   useIdentityEventPublisher,
   useIdentityPolicy,
 } from '../server/utils/identity-composition'
+import {
+  getIdentityDirectory,
+  getIdentityProvisioning,
+  provisionIdentityTenant,
+  relayIdentityOutbox,
+  runIdentityMaintenance,
+} from '../server/utils/identity-server'
 
 const pool = { query: vi.fn(), connect: vi.fn(), end: vi.fn() }
 
@@ -73,4 +80,17 @@ describe('Identity composition ports', () => {
     provideIdentityPolicy({ closureGraceDays: 60 })
     expect(useIdentityPolicy().closureGraceDays).toBe(60)
   })
+
+  it('fails closed in every server function when the database is absent', async () => {
+    expect(() => getIdentityProvisioning()).toThrow(IdentityCompositionError)
+    expect(() => getIdentityDirectory()).toThrow(IdentityCompositionError)
+    expect(() => runIdentityMaintenance()).toThrow(IdentityCompositionError)
+    expect(() => provisionIdentityTenant({ jurisdiction: 'uk-gdpr', dataRegion: 'uk', correlationId: '01a120c9-2cd1-784a-a3d6-f725b2cb2eab' })).toThrow(IdentityCompositionError)
+  })
+
+  it('refuses to relay the outbox without a publisher, even with a database', () => {
+    provideIdentityDatabase({ dialect: 'postgres', pool })
+    expect(() => relayIdentityOutbox()).toThrow(/IdentityEventPublisher/)
+  })
 })
+
