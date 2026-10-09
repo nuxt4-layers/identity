@@ -41,7 +41,8 @@ The host application:
 - applies migrations at deployment with `migrateIdentityDatabase({ pool: migrationPool, runtimeRole })`, which refuses a runtime role that could bypass row-level security;
 - supplies the **runtime** pool through `provideIdentityDatabase` (required);
 - schedules `runIdentityMaintenance()` every few minutes and `relayIdentityOutbox({ limit })` frequently (every few seconds to a minute), from a Nitro scheduled task, a cron job or a queue. Both are idempotent and safe on several instances. Access never depends on them: states and dates are evaluated on every read. The playground's `server/tasks/identity/maintenance.ts` shows one way;
-- provisions tenants with `provisionIdentityTenant(...)` from the platform operator's procedure, never from an HTTP route;
+- runs the platform operator's procedures with the **migration** pool, never from an HTTP route: `provisionIdentityTenant({ pool, jurisdiction, dataRegion, ... })` provisions a tenant, and `bootstrapIdentityRootGroup({ pool, tenantId, name, firstOwnerId, ... })` creates its first root group and founding owner, once. The runtime role can do neither; every later root group is an approved `group.create-root` change;
+- designates a **platform group** (`provideIdentityPolicy({ platformGroupId })`): a standard group whose owners and qualifying members are the platform's operators. Root groups, and suspending or reinstating an identity, are authorised and approved there; without one, those changes are refused;
 - supplies `provideIdentityAccessDecision` (required), adapting Authorisation's decision for Identity's permissions. It must reject on failure, never allow;
 - supplies `provideIdentityApprovalPolicy` (required), adapting Authorisation's catalogue risk levels and the principals who hold a permission in a group. Every read is `strong`;
 - supplies `provideIdentityEventPublisher` (required), the publishing end of its outbox relay;
@@ -64,6 +65,7 @@ export default defineNitroPlugin(() => {
   provideIdentityAccessDecision(authorisationDecisionAdapter)
   provideIdentityApprovalPolicy(authorisationApprovalAdapter)
   provideIdentityEventPublisher(outboxRelay)
+  provideIdentityPolicy({ platformGroupId: process.env.IDENTITY_PLATFORM_GROUP_ID ?? null })
   provideAuthorisationPermissions(IDENTITY_PERMISSIONS)
 })
 ```
@@ -88,7 +90,7 @@ Identity follows ADR-0002 and the [Data Store Security Standard v0.1](https://gi
 | Port | `provideIdentityDatabase({ dialect: 'postgres', pool, schema? })`, a `pg`-compatible pool |
 | Holds | Identities, external identifiers, tenants, groups, memberships, invitations (token digests only), group settings, pending changes, break-glass reviews, the outbox. System of record for all of them |
 | Classification | No personal data, no secrets, no credentials. Opaque identifiers, codes, instants, digests and group names |
-| Isolation | Tenant-isolated tables (`tenant`, `group`, `membership`, `identity_external_id`) carry `tenant_id` and use row-level security on the transaction-local `identity.tenant_ids`; with none set, the runtime role sees nothing. Tables that span tenants (`identity`, `outbox`, `provisioning_request`) are not granted to the runtime role: it reaches them only through SECURITY DEFINER functions with a fixed `search_path` that return exactly a port's answer. The runtime role neither owns anything nor has `BYPASSRLS`. Its writes are limited to inserting child groups and memberships (a guard trigger refuses root groups and self-made owners) and to the columns phase 2b changes; events are written by triggers, never by the runtime role |
+| Isolation | Tenant-isolated tables (`tenant`, `group`, `membership`, `identity_external_id`, `pending_change`) carry `tenant_id` and use row-level security on the transaction-local `identity.tenant_ids`; with none set, the runtime role sees nothing. Tables that span tenants (`identity`, `outbox`, `provisioning_request`) are not granted to the runtime role: it reaches them only through SECURITY DEFINER functions with a fixed `search_path` that return exactly a port's answer. The runtime role neither owns anything nor has `BYPASSRLS`. Its writes are limited to inserting child groups and memberships (a guard trigger refuses root groups and self-made owners) and to the columns phase 2b changes (a guard trigger refuses reviving an ended membership, reinstating a suspended one, and suspending or removing an owner). It may only read pending changes: recording, deciding, cancelling and applying them run through SECURITY DEFINER functions that check the rules again. Events are written by triggers and those functions, never by the runtime role. It cannot create tenants or root groups at all: the operator's procedures use the migration role |
 | Erasure | Nothing to erase about a person: anonymisation is Profile's deletion of its record. A closed identity's identifier remains, referring to nobody the platform can name |
 | Rebuild | Not applicable: no derived copies. A host cache in front of the directory port must pass the conformance suite |
 
@@ -107,6 +109,9 @@ Identity follows ADR-0002 and the [Data Store Security Standard v0.1](https://gi
 | Invalid policy, or a loosening without a risk treatment | `TypeError` or a validation error from `provideIdentityPolicy` at startup |
 | Authorisation unreachable or failing | `unavailable` (503); the change is refused |
 | Database failure | `unavailable` (503); provided ports reject |
+| Approval-policy port failing, or missing a permission from its catalogue | `unavailable` (503); the change is neither recorded nor decided |
+| No platform group designated | Root groups and identity suspension are refused (`forbidden`) |
+| An approved or due change whose rule no longer holds when it applies | The change is recorded `rejected`, with the reason kept for operators; `approval.decided` says so |
 | Event publisher failure | The event stays in the outbox and is retried; the committed change stands. Later events wait for the next run, so each aggregate's order is kept |
 | Outbox event that does not match the contract | Never published; logged by sequence number (no payload) for an operator to inspect |
 | Runtime role that can bypass row-level security, or is the migration role | `migrateIdentityDatabase` refuses to run |

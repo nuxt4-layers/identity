@@ -537,6 +537,598 @@ grant execute on function
 to {{runtime}};
 `,
   },
+  {
+    id: '0003_governance_approvals',
+    sql: `
+-- Pending governance changes ------------------------------------------------
+-- Recorded, decided, cancelled and applied only through the SECURITY
+-- DEFINER functions below. The runtime role may read them, under row-level
+-- security on the tenant of the group that governs the change, and nothing
+-- else: it can neither forge an approval nor apply a change itself.
+
+create table {{schema}}.pending_change (
+  change_id uuid primary key,
+  type text not null,
+  tenant_id uuid not null references {{schema}}.tenant (tenant_id),
+  group_id uuid not null references {{schema}}."group" (group_id),
+  requester_id uuid not null references {{schema}}.identity (identity_id),
+  beneficiary_id uuid references {{schema}}.identity (identity_id),
+  risk text not null check (risk in ('low', 'medium', 'high', 'critical')),
+  reason_code text not null,
+  reference text,
+  target jsonb not null,
+  created_id uuid,
+  internal jsonb not null,
+  required_approvals integer not null check (required_approvals between 0 and 2),
+  route text not null check (route in ('approvers', 'parent-owner', 'tenant-owner', 'published-delay', 'none')),
+  approvals jsonb not null,
+  change_digest text not null,
+  delay_ends_at timestamptz,
+  expires_at timestamptz,
+  state text not null check (state in ('awaiting-approval', 'delayed', 'applied', 'rejected', 'expired', 'cancelled')),
+  failure text,
+  correlation_id uuid not null,
+  created_at timestamptz not null,
+  decided_at timestamptz,
+  version integer not null check (version >= 1),
+  check ((route = 'none') = (required_approvals = 0)),
+  check ((route = 'published-delay') = (delay_ends_at is not null)),
+  check ((route in ('approvers', 'parent-owner', 'tenant-owner')) = (expires_at is not null)),
+  check ((state in ('awaiting-approval', 'delayed')) = (decided_at is null))
+);
+create index pending_change_awaiting_idx on {{schema}}.pending_change (expires_at) where state = 'awaiting-approval';
+create index pending_change_delayed_idx on {{schema}}.pending_change (delay_ends_at) where state = 'delayed';
+create index pending_change_group_idx on {{schema}}.pending_change (group_id, created_at);
+
+alter table {{schema}}.pending_change enable row level security;
+create policy tenant_isolation on {{schema}}.pending_change using (tenant_id = any ({{schema}}.current_tenant_ids()));
+create trigger pending_change_version before update on {{schema}}.pending_change for each row execute function {{schema}}.bump_version();
+
+-- Rules the database holds as well as the layer (internal) --------------------
+
+create function {{schema}}.risk_rank(p_risk text) returns integer language sql immutable as $$
+  select array_position(array['low', 'medium', 'high', 'critical'], p_risk)
+$$;
+
+-- The risk Identity declares for each change; a host's catalogue may raise it, never lower it.
+create function {{schema}}.declared_risk(p_type text) returns text language sql immutable as $$
+  select case p_type
+    when 'group.create-root' then 'high' when 'group.reparent' then 'critical' when 'group.archive' then 'high'
+    when 'group.change-settings' then 'high' when 'group.change-approvals' then 'critical'
+    when 'group.add-owner' then 'critical' when 'group.remove-owner' then 'critical' when 'group.suspend-owner' then 'critical'
+    when 'membership.reinstate' then 'medium' when 'membership.schedule' then 'medium'
+    when 'identity.suspend' then 'high' when 'identity.reinstate' then 'high' when 'service-identity.create' then 'high'
+  end
+$$;
+
+create function {{schema}}.confers(p_type text) returns boolean language sql immutable as $$
+  select p_type in ('group.add-owner', 'group.appoint-owner', 'membership.reinstate', 'membership.schedule', 'identity.reinstate')
+$$;
+
+-- Owners in effect now: active membership within its dates, of an active person.
+create function {{schema}}.active_owner_count(p_group uuid, p_excluding uuid[]) returns integer language sql stable as $$
+  select count(*)::integer from {{schema}}.membership m join {{schema}}.identity i on i.identity_id = m.identity_id
+  where m.group_id = p_group and m.owner and m.state = 'active' and i.state = 'active' and i.kind = 'person'
+    and m.starts_at <= {{schema}}.context_at() and (m.ends_at is null or m.ends_at > {{schema}}.context_at())
+    and not (m.identity_id = any (coalesce(p_excluding, '{}'::uuid[])))
+$$;
+
+create function {{schema}}.owns(p_identity uuid, p_group uuid) returns boolean language sql stable as $$
+  select {{schema}}.active_owner_count(p_group, '{}'::uuid[]) > {{schema}}.active_owner_count(p_group, array[p_identity])
+$$;
+
+-- The digest an approval binds to: everything the change will do.
+create function {{schema}}.digest_of(c {{schema}}.pending_change) returns text language sql stable as $$
+  select encode(sha256(convert_to(jsonb_build_object(
+    'type', c.type, 'tenantId', c.tenant_id, 'groupId', c.group_id, 'requesterId', c.requester_id,
+    'beneficiaryId', c.beneficiary_id, 'risk', c.risk, 'reasonCode', c.reason_code, 'reference', c.reference,
+    'target', c.target, 'createdId', c.created_id, 'internal', c.internal, 'requiredApprovals', c.required_approvals,
+    'route', c.route)::text, 'UTF8')), 'hex')
+$$;
+
+create function {{schema}}.change_json(c {{schema}}.pending_change) returns jsonb language sql stable as $$
+  select jsonb_build_object(
+    'changeId', c.change_id, 'type', c.type, 'tenantId', c.tenant_id, 'groupId', c.group_id,
+    'requesterId', c.requester_id, 'beneficiaryId', c.beneficiary_id, 'risk', c.risk,
+    'justification', jsonb_build_object('reasonCode', c.reason_code, 'reference', c.reference),
+    'target', c.target, 'createdId', c.created_id, 'requiredApprovals', c.required_approvals, 'route', c.route,
+    'approvals', c.approvals, 'changeDigest', c.change_digest, 'delayEndsAt', {{schema}}.iso(c.delay_ends_at),
+    'expiresAt', {{schema}}.iso(c.expires_at), 'state', c.state, 'correlationId', c.correlation_id,
+    'createdAt', {{schema}}.iso(c.created_at), 'decidedAt', {{schema}}.iso(c.decided_at), 'version', c.version)
+$$;
+
+-- Events: the founding owner, and the change behind a membership event --------
+-- A root group's founding owner may differ from the requester. Only the
+-- owner role can say so, through a claim the runtime role cannot write;
+-- otherwise the founding owner is the actor, and the runtime role may make
+-- only itself the founding owner of a group it creates.
+
+create table {{schema}}.founding_claim (
+  group_id uuid primary key,
+  identity_id uuid not null
+);
+
+create or replace function {{schema}}.guard_membership_insert() returns trigger language plpgsql as $$
+begin
+  if {{schema}}.is_owner_role() then return new; end if;
+  if new.owner or new.founding_owner then
+    if not (new.owner and new.founding_owner and new.kind = 'member' and new.state = 'active'
+      and new.identity_id = nullif(current_setting('identity.actor_id', true), '')::uuid
+      and not exists (select 1 from {{schema}}.membership m where m.group_id = new.group_id)
+      and exists (select 1 from {{schema}}."group" g where g.group_id = new.group_id and g.xmin = pg_current_xact_id()::xid)) then
+      raise exception 'identity:requires-approval';
+    end if;
+  end if;
+  return new;
+end $$;
+
+create or replace function {{schema}}.group_events() returns trigger language plpgsql security definer set search_path = pg_catalog, pg_temp as $$
+declare
+  v_correlation uuid := {{schema}}.context_uuid('identity.correlation_id');
+  v_actor uuid := {{schema}}.context_uuid('identity.actor_id');
+  v_founder uuid;
+  v_at timestamptz := {{schema}}.context_at();
+  v_changed jsonb;
+begin
+  if new.kind = 'personal' then return new; end if;
+  if v_correlation is null then raise exception 'identity:correlation-required'; end if;
+  if tg_op = 'INSERT' then
+    select f.identity_id into v_founder from {{schema}}.founding_claim f where f.group_id = new.group_id;
+    v_founder := coalesce(v_founder, v_actor);
+    if v_founder is null then raise exception 'identity:actor-required'; end if;
+    perform {{schema}}.enqueue_event('group.created', v_actor, 'group', new.group_id, new.version, new.tenant_id, v_correlation, v_at,
+      jsonb_build_object('groupId', new.group_id, 'lineage', to_jsonb({{schema}}.lineage_of(new.group_id)), 'foundingOwnerId', v_founder));
+    return new;
+  end if;
+  if new.name is distinct from old.name then
+    perform {{schema}}.enqueue_event('group.renamed', v_actor, 'group', new.group_id, new.version, new.tenant_id, v_correlation, v_at,
+      jsonb_build_object('groupId', new.group_id));
+  end if;
+  if new.settings is distinct from old.settings then
+    select coalesce(jsonb_agg(k order by k), '[]'::jsonb) into v_changed
+    from jsonb_object_keys(new.settings) k where new.settings -> k is distinct from old.settings -> k;
+    if jsonb_array_length(v_changed) > 0 then
+      perform {{schema}}.enqueue_event('group.settings-changed', v_actor, 'group', new.group_id, new.version, new.tenant_id, v_correlation, v_at,
+        jsonb_build_object('groupId', new.group_id, 'changed', v_changed));
+    end if;
+  end if;
+  return new;
+end $$;
+
+create or replace function {{schema}}.membership_events() returns trigger language plpgsql security definer set search_path = pg_catalog, pg_temp as $$
+declare
+  v_correlation uuid := {{schema}}.context_uuid('identity.correlation_id');
+  v_actor uuid := {{schema}}.context_uuid('identity.actor_id');
+  v_change uuid := {{schema}}.context_uuid('identity.change_id');
+  v_at timestamptz := {{schema}}.context_at();
+  v_base jsonb := jsonb_build_object('membershipId', new.membership_id, 'identityId', new.identity_id, 'groupId', new.group_id);
+  v_type text;
+  v_data jsonb;
+begin
+  -- A personal group's membership follows its identity; provisioning announces it.
+  if exists (select 1 from {{schema}}."group" g where g.group_id = new.group_id and g.kind = 'personal') then return new; end if;
+  if v_correlation is null then raise exception 'identity:correlation-required'; end if;
+  if tg_op = 'INSERT' then
+    v_type := 'membership.added';
+    v_data := v_base || jsonb_build_object('kind', new.kind, 'owner', new.owner, 'startsAt', {{schema}}.iso(new.starts_at), 'endsAt', {{schema}}.iso(new.ends_at));
+  elsif new.state is distinct from old.state then
+    if new.state = 'ended' then
+      v_type := 'membership.ended';
+      v_data := v_base || jsonb_build_object('endReason', new.end_reason, 'reasonCode', new.reason_code);
+    elsif new.state = 'paused' then
+      v_type := 'membership.paused'; v_data := v_base;
+    elsif new.state = 'suspended' then
+      v_type := 'membership.suspended';
+      v_data := v_base || jsonb_build_object('reasonCode', new.reason_code, 'changeId', v_change, 'breakGlassReviewId', null);
+    elsif old.state = 'paused' then
+      v_type := 'membership.resumed'; v_data := v_base;
+    else
+      v_type := 'membership.reinstated'; v_data := v_base || jsonb_build_object('changeId', v_change);
+    end if;
+  elsif new.starts_at is distinct from old.starts_at or new.ends_at is distinct from old.ends_at then
+    v_type := 'membership.dates-changed';
+    v_data := v_base || jsonb_build_object('startsAt', {{schema}}.iso(new.starts_at), 'endsAt', {{schema}}.iso(new.ends_at));
+  else
+    return new;
+  end if;
+  perform {{schema}}.enqueue_event(v_type, v_actor, 'membership', new.membership_id, new.version, new.tenant_id, v_correlation, v_at, v_data);
+  return new;
+end $$;
+
+-- Limits on the runtime role's direct membership updates -------------------
+-- It may pause, resume, end and suspend (phase 2b), but never revive an
+-- ended membership, reinstate a suspended one, or suspend or remove an
+-- owner: those are approved changes.
+
+create function {{schema}}.guard_membership_update() returns trigger language plpgsql as $$
+begin
+  if {{schema}}.is_owner_role() then return new; end if;
+  if old.state = 'ended'
+    or (old.state = 'suspended' and new.state not in ('suspended', 'ended'))
+    or (old.owner and (new.state = 'suspended' or (new.state = 'ended' and new.end_reason <> 'left'))) then
+    raise exception 'identity:requires-approval';
+  end if;
+  return new;
+end $$;
+
+create trigger membership_update_guard before update on {{schema}}.membership for each row execute function {{schema}}.guard_membership_update();
+
+-- Applying a change (internal) -------------------------------------------------
+-- Runs as the owner. Every rule is checked again here, at the moment the
+-- change takes effect, whatever was true when it was requested.
+
+create function {{schema}}.apply_change(c {{schema}}.pending_change, p_at timestamptz) returns void language plpgsql as $$
+declare
+  v_group {{schema}}."group"%rowtype;
+  v_parent {{schema}}."group"%rowtype;
+  v_m {{schema}}.membership%rowtype;
+  v_i {{schema}}.identity%rowtype;
+  v_target_id uuid;
+  v_previous uuid[];
+  v_height integer;
+  v_version integer;
+  v_term integer;
+  v_starts timestamptz;
+  v_ends timestamptz;
+begin
+  if {{schema}}.digest_of(c) <> c.change_digest then raise exception 'identity:change-differs'; end if;
+  perform set_config('identity.correlation_id', c.correlation_id::text, true);
+  perform set_config('identity.actor_id', c.requester_id::text, true);
+  perform set_config('identity.at', p_at::text, true);
+  perform set_config('identity.change_id', c.change_id::text, true);
+
+  if c.type = 'group.create-root' then
+    if not exists (select 1 from {{schema}}.tenant t where t.tenant_id = (c.target ->> 'tenantId')::uuid and t.state = 'active') then
+      raise exception 'identity:tenant-unavailable';
+    end if;
+    if not exists (select 1 from {{schema}}.identity i where i.identity_id = (c.target ->> 'firstOwnerId')::uuid and i.kind = 'person' and i.state = 'active') then
+      raise exception 'identity:owner-unavailable';
+    end if;
+    insert into {{schema}}.founding_claim values (c.created_id, (c.target ->> 'firstOwnerId')::uuid);
+    insert into {{schema}}."group" (group_id, tenant_id, kind, parent_group_id, name, name_skeleton, external_id, state, settings, created_at, version)
+      values (c.created_id, (c.target ->> 'tenantId')::uuid, 'standard', null, c.target ->> 'name', c.internal ->> 'nameSkeleton', null, 'active', c.internal -> 'settings', p_at, 1);
+    insert into {{schema}}.membership (membership_id, identity_id, group_id, tenant_id, kind, state, owner, founding_owner, starts_at, ends_at, ended_at, end_reason, reason_code, created_at, version)
+      values ({{schema}}.uuid_v7(), (c.target ->> 'firstOwnerId')::uuid, c.created_id, (c.target ->> 'tenantId')::uuid, 'member', 'active', true, true, p_at, null, null, null, null, p_at, 1);
+    delete from {{schema}}.founding_claim where group_id = c.created_id;
+
+  elsif c.type in ('group.reparent', 'group.archive', 'group.change-settings', 'group.change-approvals', 'service-identity.create') then
+    select * into v_group from {{schema}}."group" where group_id = (c.target ->> 'groupId')::uuid and kind = 'standard' for update;
+    if not found then raise exception 'identity:unknown'; end if;
+    if v_group.state <> 'active' then raise exception 'identity:group-not-active'; end if;
+
+    if c.type = 'group.reparent' then
+      select * into v_parent from {{schema}}."group" where group_id = (c.target ->> 'parentGroupId')::uuid;
+      if not found or v_parent.state <> 'active' then raise exception 'identity:group-not-active'; end if;
+      with recursive down (group_id, depth) as (
+        select v_group.group_id, 0
+        union all
+        select g.group_id, down.depth + 1 from {{schema}}."group" g join down on g.parent_group_id = down.group_id where down.depth < 64
+      )
+      select max(depth) into v_height from down;
+      if cardinality({{schema}}.lineage_of(v_parent.group_id)) + 1 + v_height > (c.internal ->> 'maxDepth')::integer then
+        raise exception 'identity:hierarchy-depth';
+      end if;
+      v_previous := {{schema}}.lineage_of(v_group.group_id);
+      update {{schema}}."group" set parent_group_id = v_parent.group_id where group_id = v_group.group_id returning version into v_version;
+      perform {{schema}}.enqueue_event('group.reparented', c.requester_id, 'group', v_group.group_id, v_version, v_group.tenant_id, c.correlation_id, p_at,
+        jsonb_build_object('groupId', v_group.group_id, 'previousLineage', to_jsonb(v_previous), 'lineage', to_jsonb({{schema}}.lineage_of(v_group.group_id)), 'changeId', c.change_id));
+
+    elsif c.type = 'group.archive' then
+      if exists (select 1 from {{schema}}."group" g where g.parent_group_id = v_group.group_id and g.state <> 'archived') then
+        raise exception 'identity:active-children';
+      end if;
+      if exists (select 1 from {{schema}}.identity i where i.owner_group_id = v_group.group_id and i.state not in ('closed', 'suspended')) then
+        raise exception 'identity:active-service-identities';
+      end if;
+      if v_group.settings ->> 'onArchive' = 'end-memberships' then
+        update {{schema}}.membership set state = 'ended', ended_at = p_at, end_reason = 'group-archived'
+          where group_id = v_group.group_id and state <> 'ended';
+      end if;
+      update {{schema}}."group" set state = 'archived' where group_id = v_group.group_id returning version into v_version;
+      perform {{schema}}.enqueue_event('group.archived', c.requester_id, 'group', v_group.group_id, v_version, v_group.tenant_id, c.correlation_id, p_at,
+        jsonb_build_object('groupId', v_group.group_id, 'changeId', c.change_id));
+
+    elsif c.type = 'group.change-settings' then
+      if (v_group.settings - 'approvals') <> (c.internal -> 'baseSettings') then raise exception 'identity:changed-since-request'; end if;
+      update {{schema}}."group" set settings = (c.target -> 'settings') || jsonb_build_object('approvals', v_group.settings -> 'approvals')
+        where group_id = v_group.group_id;
+
+    elsif c.type = 'group.change-approvals' then
+      if (v_group.settings -> 'approvals') <> (c.internal -> 'baseApprovals') then raise exception 'identity:changed-since-request'; end if;
+      if (c.target -> 'approvals' -> 'required' ->> 'high')::integer < 1 or (c.target -> 'approvals' -> 'required' ->> 'critical')::integer < 1 then
+        raise exception 'identity:approval-floor';
+      end if;
+      update {{schema}}."group" set settings = jsonb_set(v_group.settings, '{approvals}', c.target -> 'approvals') where group_id = v_group.group_id;
+
+    else -- service-identity.create
+      if not exists (select 1 from {{schema}}.tenant t where t.tenant_id = v_group.tenant_id and t.state = 'active') then
+        raise exception 'identity:tenant-unavailable';
+      end if;
+      insert into {{schema}}.identity (identity_id, kind, state, previous_state, home_tenant_id, personal_group_id, owner_group_id, created_at, state_changed_at, deadline_at, version)
+        values (c.created_id, 'service', 'active', null, v_group.tenant_id, null, v_group.group_id, p_at, p_at, null, 1);
+      perform {{schema}}.enqueue_event('identity.provisioned', c.requester_id, 'identity', c.created_id, 1, null, c.correlation_id, p_at,
+        jsonb_build_object('identityId', c.created_id, 'kind', 'service', 'homeTenantId', v_group.tenant_id, 'personalGroupId', null));
+    end if;
+
+  elsif c.type in ('group.add-owner', 'group.remove-owner', 'group.suspend-owner', 'membership.reinstate', 'membership.schedule') then
+    select * into v_m from {{schema}}.membership where membership_id = (c.target ->> 'membershipId')::uuid for update;
+    if not found then raise exception 'identity:unknown'; end if;
+    select * into v_group from {{schema}}."group" where group_id = v_m.group_id for update;
+    if v_group.kind <> 'standard' then raise exception 'identity:unknown'; end if;
+    if v_group.state <> 'active' then raise exception 'identity:group-not-active'; end if;
+    if v_m.state = 'ended' then raise exception 'identity:membership-ended'; end if;
+
+    if c.type = 'group.add-owner' then
+      if v_m.owner then raise exception 'identity:already-owner'; end if;
+      if v_m.kind <> 'member' or v_m.state <> 'active' then raise exception 'identity:not-eligible'; end if;
+      if not exists (select 1 from {{schema}}.identity i where i.identity_id = v_m.identity_id and i.kind = 'person' and i.state = 'active') then
+        raise exception 'identity:not-eligible';
+      end if;
+      update {{schema}}.membership set owner = true where membership_id = v_m.membership_id;
+      update {{schema}}."group" set version = version where group_id = v_group.group_id returning version into v_version;
+      perform {{schema}}.enqueue_event('group.owners-changed', c.requester_id, 'group', v_group.group_id, v_version, v_group.tenant_id, c.correlation_id, p_at,
+        jsonb_build_object('groupId', v_group.group_id, 'added', jsonb_build_array(v_m.identity_id), 'removed', '[]'::jsonb, 'changeId', c.change_id, 'breakGlassReviewId', null));
+
+    elsif c.type in ('group.remove-owner', 'group.suspend-owner') then
+      if not v_m.owner then raise exception 'identity:not-owner'; end if;
+      if {{schema}}.active_owner_count(v_group.group_id, array[v_m.identity_id]) < 1 then raise exception 'identity:last-owner'; end if;
+      if c.type = 'group.remove-owner' then
+        update {{schema}}.membership set owner = false where membership_id = v_m.membership_id;
+        update {{schema}}."group" set version = version where group_id = v_group.group_id returning version into v_version;
+        perform {{schema}}.enqueue_event('group.owners-changed', c.requester_id, 'group', v_group.group_id, v_version, v_group.tenant_id, c.correlation_id, p_at,
+          jsonb_build_object('groupId', v_group.group_id, 'added', '[]'::jsonb, 'removed', jsonb_build_array(v_m.identity_id), 'changeId', c.change_id, 'breakGlassReviewId', null));
+      else
+        if v_m.state = 'suspended' then raise exception 'identity:already-suspended'; end if;
+        update {{schema}}.membership set state = 'suspended', reason_code = c.reason_code where membership_id = v_m.membership_id;
+      end if;
+
+    elsif c.type = 'membership.reinstate' then
+      if v_m.state <> 'suspended' then raise exception 'identity:not-suspended'; end if;
+      update {{schema}}.membership set state = 'active', reason_code = null where membership_id = v_m.membership_id;
+
+    else -- membership.schedule
+      v_starts := (c.target ->> 'startsAt')::timestamptz;
+      v_ends := (c.target ->> 'endsAt')::timestamptz;
+      if v_ends is not null and (v_ends <= v_starts or v_ends <= p_at) then raise exception 'identity:invalid-dates'; end if;
+      if v_m.kind = 'guest' then
+        v_term := least((v_group.settings -> 'guests' ->> 'termDays')::integer, (c.internal ->> 'guestTermDays')::integer);
+        if v_ends is null or v_ends > greatest(p_at, v_starts) + make_interval(days => v_term) then raise exception 'identity:guest-term'; end if;
+      end if;
+      update {{schema}}.membership set starts_at = v_starts, ends_at = v_ends where membership_id = v_m.membership_id;
+    end if;
+
+  elsif c.type in ('identity.suspend', 'identity.reinstate') then
+    select * into v_i from {{schema}}.identity where identity_id = (c.target ->> 'identityId')::uuid for update;
+    if not found or v_i.kind not in ('person', 'service') then raise exception 'identity:unknown'; end if;
+    if c.type = 'identity.suspend' then
+      if v_i.state not in ('active', 'paused') then raise exception 'identity:not-suspendable'; end if;
+      update {{schema}}.identity set state = 'suspended', previous_state = v_i.state, state_changed_at = p_at, version = version + 1
+        where identity_id = v_i.identity_id;
+      perform {{schema}}.enqueue_event('identity.suspended', c.requester_id, 'identity', v_i.identity_id, v_i.version + 1, null, c.correlation_id, p_at,
+        jsonb_build_object('identityId', v_i.identity_id, 'reasonCode', c.reason_code, 'changeId', c.change_id, 'breakGlassReviewId', null));
+    else
+      if v_i.state <> 'suspended' then raise exception 'identity:not-suspended'; end if;
+      update {{schema}}.identity set state = coalesce(v_i.previous_state, 'active'), previous_state = null, state_changed_at = p_at, version = version + 1
+        where identity_id = v_i.identity_id;
+      perform {{schema}}.enqueue_event('identity.reinstated', c.requester_id, 'identity', v_i.identity_id, v_i.version + 1, null, c.correlation_id, p_at,
+        jsonb_build_object('identityId', v_i.identity_id, 'changeId', c.change_id));
+    end if;
+
+  else
+    raise exception 'identity:unknown-change';
+  end if;
+
+  perform set_config('identity.change_id', '', true);
+end $$;
+
+-- Applies an approved or due change. A rule that no longer holds rejects it,
+-- with the reason kept for operators; nothing else in the transaction is lost.
+create function {{schema}}.settle_change(p_change uuid, p_at timestamptz, p_actor uuid) returns text language plpgsql as $$
+declare c {{schema}}.pending_change%rowtype; v_outcome text; v_version integer;
+begin
+  select * into c from {{schema}}.pending_change where change_id = p_change for update;
+  begin
+    perform {{schema}}.apply_change(c, p_at);
+    update {{schema}}.pending_change set state = 'applied', decided_at = p_at where change_id = p_change returning version into v_version;
+    v_outcome := 'applied';
+  exception when others then
+    update {{schema}}.pending_change set state = 'rejected', decided_at = p_at, failure = left(sqlerrm, 200) where change_id = p_change returning version into v_version;
+    v_outcome := 'rejected';
+  end;
+  perform {{schema}}.enqueue_event('approval.decided', p_actor, 'approval', p_change, v_version, c.tenant_id, c.correlation_id, p_at,
+    jsonb_build_object('changeId', p_change, 'outcome', v_outcome));
+  return v_outcome;
+end $$;
+
+create function {{schema}}.close_change(p_change uuid, p_state text, p_actor uuid, p_at timestamptz) returns void language plpgsql as $$
+declare v_version integer; v_tenant uuid; v_correlation uuid;
+begin
+  update {{schema}}.pending_change set state = p_state, decided_at = p_at where change_id = p_change
+    returning version, tenant_id, correlation_id into v_version, v_tenant, v_correlation;
+  perform {{schema}}.enqueue_event('approval.decided', p_actor, 'approval', p_change, v_version, v_tenant, v_correlation, p_at,
+    jsonb_build_object('changeId', p_change, 'outcome', p_state));
+end $$;
+
+-- Port functions (SECURITY DEFINER; granted to the runtime role) ------------
+
+-- Records a change the layer has authorised and routed. The database checks
+-- again what it can know: the risk is never below Identity's, the
+-- requirement never below the group's, no self-grant, a real delay.
+create function {{schema}}.record_change(p jsonb) returns jsonb language plpgsql volatile security definer set search_path = pg_catalog, pg_temp as $$
+declare
+  c {{schema}}.pending_change%rowtype;
+  v_group {{schema}}."group"%rowtype;
+  v_at timestamptz := (p ->> 'at')::timestamptz;
+  v_floor integer;
+begin
+  c.type := p ->> 'type';
+  c.risk := p ->> 'risk';
+  if {{schema}}.declared_risk(c.type) is null then raise exception 'identity:unknown-change'; end if;
+  if {{schema}}.risk_rank(c.risk) is null or {{schema}}.risk_rank(c.risk) < {{schema}}.risk_rank({{schema}}.declared_risk(c.type)) then
+    raise exception 'identity:approval-floor';
+  end if;
+  select * into v_group from {{schema}}."group" where group_id = (p ->> 'groupId')::uuid;
+  if not found or v_group.kind <> 'standard' then raise exception 'identity:unknown'; end if;
+  c.change_id := {{schema}}.uuid_v7();
+  c.tenant_id := v_group.tenant_id;
+  c.group_id := v_group.group_id;
+  c.requester_id := (p ->> 'requesterId')::uuid;
+  c.beneficiary_id := (p ->> 'beneficiaryId')::uuid;
+  if not exists (select 1 from {{schema}}.identity i where i.identity_id = c.requester_id and i.kind = 'person' and i.state = 'active') then
+    raise exception 'identity:unknown';
+  end if;
+  if {{schema}}.confers(c.type) and c.beneficiary_id = c.requester_id then raise exception 'identity:self-grant'; end if;
+  c.reason_code := p ->> 'reasonCode';
+  c.reference := p ->> 'reference';
+  if c.reason_code is null or (coalesce((v_group.settings -> 'approvals' ->> 'referenceRequired')::boolean, false) and c.reference is null) then
+    raise exception 'identity:justification-missing';
+  end if;
+  c.target := p -> 'target';
+  c.created_id := (p ->> 'createdId')::uuid;
+  c.internal := coalesce(p -> 'internal', '{}'::jsonb);
+  c.required_approvals := (p ->> 'requiredApprovals')::integer;
+  v_floor := greatest(case when c.risk in ('high', 'critical') then 1 else 0 end,
+    coalesce((v_group.settings -> 'approvals' -> 'required' ->> c.risk)::integer, 0));
+  c.route := p ->> 'route';
+  -- The owner fallbacks ask one owner of the parent group or of the tenant's root group.
+  if (c.route in ('parent-owner', 'tenant-owner') and (c.required_approvals <> 1 or v_floor < 1))
+    or (c.route not in ('parent-owner', 'tenant-owner') and c.required_approvals < v_floor) then
+    raise exception 'identity:approval-floor';
+  end if;
+  c.approvals := '[]'::jsonb;
+  c.delay_ends_at := (p ->> 'delayEndsAt')::timestamptz;
+  c.expires_at := (p ->> 'expiresAt')::timestamptz;
+  if c.route = 'published-delay'
+    and c.delay_ends_at < v_at + (case when c.risk = 'critical' then interval '72 hours' else interval '24 hours' end) then
+    raise exception 'identity:approval-floor';
+  end if;
+  if c.expires_at is not null and (c.expires_at <= v_at or c.expires_at > v_at + interval '14 days') then
+    raise exception 'identity:approval-floor';
+  end if;
+  c.correlation_id := (p ->> 'correlationId')::uuid;
+  c.created_at := v_at;
+  c.version := 1;
+  c.state := case c.route when 'none' then 'applied' when 'published-delay' then 'delayed' else 'awaiting-approval' end;
+  c.decided_at := case when c.route = 'none' then v_at end;
+  c.change_digest := {{schema}}.digest_of(c);
+  insert into {{schema}}.pending_change select c.*;
+  if c.route = 'none' then
+    -- No approver needed: it applies now, or nothing is recorded at all.
+    perform {{schema}}.apply_change(c, v_at);
+  else
+    perform {{schema}}.enqueue_event('approval.requested', c.requester_id, 'approval', c.change_id, 1, c.tenant_id, c.correlation_id, v_at,
+      jsonb_build_object('changeId', c.change_id, 'changeType', c.type, 'groupId', c.group_id, 'risk', c.risk, 'route', c.route,
+        'requiredApprovals', c.required_approvals, 'delayEndsAt', {{schema}}.iso(c.delay_ends_at)));
+  end if;
+  return {{schema}}.change_json(c);
+end $$;
+
+-- Records an approver's decision. For the approvers route, the layer has
+-- just asked Authorisation (strong) that the approver qualifies; for the
+-- owner fallbacks, ownership is checked here.
+create function {{schema}}.record_decision(p_change uuid, p_approver uuid, p_decision text, p_assurance jsonb, p_digest text, p_at timestamptz)
+returns jsonb language plpgsql volatile security definer set search_path = pg_catalog, pg_temp as $$
+declare c {{schema}}.pending_change%rowtype; v_lineage uuid[]; v_approved integer;
+begin
+  select * into c from {{schema}}.pending_change where change_id = p_change for update;
+  if not found then raise exception 'identity:unknown'; end if;
+  if c.state = 'awaiting-approval' and c.expires_at <= p_at then
+    -- Recorded, not raised, so that the expiry survives; the layer reports it as a conflict.
+    perform {{schema}}.close_change(p_change, 'expired', null, p_at);
+    return (select {{schema}}.change_json(pc) from {{schema}}.pending_change pc where pc.change_id = p_change);
+  end if;
+  if c.state <> 'awaiting-approval' then raise exception 'identity:not-pending'; end if;
+  if p_decision not in ('approve', 'reject') then raise exception 'identity:approval-refused'; end if;
+  if p_approver = c.requester_id or p_approver is not distinct from c.beneficiary_id
+    or not exists (select 1 from {{schema}}.identity i where i.identity_id = p_approver and i.kind = 'person' and i.state = 'active')
+    or exists (select 1 from jsonb_array_elements(c.approvals) a where a ->> 'approverId' = p_approver::text) then
+    raise exception 'identity:approval-refused';
+  end if;
+  if c.route in ('parent-owner', 'tenant-owner') then
+    v_lineage := {{schema}}.lineage_of(c.group_id);
+    if not {{schema}}.owns(p_approver, case c.route when 'parent-owner' then v_lineage[cardinality(v_lineage) - 1] else v_lineage[1] end) then
+      raise exception 'identity:approval-refused';
+    end if;
+  end if;
+  if p_digest is distinct from c.change_digest or {{schema}}.digest_of(c) <> c.change_digest then raise exception 'identity:change-differs'; end if;
+  update {{schema}}.pending_change set approvals = approvals || jsonb_build_array(jsonb_build_object(
+    'approverId', p_approver, 'decision', p_decision, 'decidedAt', {{schema}}.iso(p_at), 'assurance', p_assurance, 'changeDigest', p_digest))
+    where change_id = p_change;
+  if p_decision = 'reject' then
+    perform {{schema}}.close_change(p_change, 'rejected', p_approver, p_at);
+  else
+    select count(*) into v_approved from {{schema}}.pending_change pc, jsonb_array_elements(pc.approvals) a
+      where pc.change_id = p_change and a ->> 'decision' = 'approve';
+    if v_approved >= c.required_approvals then perform {{schema}}.settle_change(p_change, p_at, p_approver); end if;
+  end if;
+  return (select {{schema}}.change_json(pc) from {{schema}}.pending_change pc where pc.change_id = p_change);
+end $$;
+
+-- The requester withdraws a change that has not taken effect.
+create function {{schema}}.cancel_change(p_change uuid, p_requester uuid, p_at timestamptz)
+returns jsonb language plpgsql volatile security definer set search_path = pg_catalog, pg_temp as $$
+declare c {{schema}}.pending_change%rowtype;
+begin
+  select * into c from {{schema}}.pending_change where change_id = p_change for update;
+  if not found or c.requester_id <> p_requester then raise exception 'identity:unknown'; end if;
+  if c.state not in ('awaiting-approval', 'delayed') then raise exception 'identity:not-pending'; end if;
+  perform {{schema}}.close_change(p_change, 'cancelled', p_requester, p_at);
+  return (select {{schema}}.change_json(pc) from {{schema}}.pending_change pc where pc.change_id = p_change);
+end $$;
+
+-- Maintenance: expires changes nobody approved in time, and applies those
+-- whose published delay has ended.
+create function {{schema}}.run_due_changes(p_at timestamptz, p_limit integer)
+returns jsonb language plpgsql volatile security definer set search_path = pg_catalog, pg_temp as $$
+declare r record; v_expired integer := 0; v_applied integer := 0; v_rejected integer := 0;
+begin
+  for r in select change_id from {{schema}}.pending_change where state = 'awaiting-approval' and expires_at <= p_at
+    order by expires_at limit p_limit for update skip locked
+  loop
+    perform {{schema}}.close_change(r.change_id, 'expired', null, p_at);
+    v_expired := v_expired + 1;
+  end loop;
+  for r in select change_id from {{schema}}.pending_change where state = 'delayed' and delay_ends_at <= p_at
+    order by delay_ends_at limit p_limit for update skip locked
+  loop
+    if {{schema}}.settle_change(r.change_id, p_at, null) = 'applied' then v_applied := v_applied + 1; else v_rejected := v_rejected + 1; end if;
+  end loop;
+  return jsonb_build_object('expired', v_expired, 'applied', v_applied, 'rejected', v_rejected);
+end $$;
+
+create function {{schema}}.get_change(p_change uuid)
+returns jsonb language sql stable security definer set search_path = pg_catalog, pg_temp as $$
+  select {{schema}}.change_json(c) from {{schema}}.pending_change c where c.change_id = p_change
+$$;
+
+-- For routing: active owners of a group other than the given identities.
+create function {{schema}}.count_active_owners(p_group uuid, p_excluding uuid[])
+returns integer language sql stable security definer set search_path = pg_catalog, pg_temp as $$
+  select {{schema}}.active_owner_count(p_group, p_excluding)
+$$;
+
+create function {{schema}}.is_active_owner(p_identity uuid, p_group uuid)
+returns boolean language sql stable security definer set search_path = pg_catalog, pg_temp as $$
+  select {{schema}}.owns(p_identity, p_group)
+$$;
+
+-- Privileges ----------------------------------------------------------------
+
+revoke all on all functions in schema {{schema}} from public;
+-- Tenants are provisioned with the migration role, by the operator's procedure.
+revoke execute on function {{schema}}.create_tenant(text, text, text, uuid, timestamptz) from {{runtime}};
+grant select on {{schema}}.pending_change to {{runtime}};
+grant execute on function
+  {{schema}}.record_change(jsonb),
+  {{schema}}.record_decision(uuid, uuid, text, jsonb, text, timestamptz),
+  {{schema}}.cancel_change(uuid, uuid, timestamptz),
+  {{schema}}.run_due_changes(timestamptz, integer),
+  {{schema}}.get_change(uuid),
+  {{schema}}.count_active_owners(uuid, uuid[]),
+  {{schema}}.is_active_owner(uuid, uuid)
+to {{runtime}};
+`,
+  },
 ]
 
 const IDENTIFIER_PATTERN = /^[a-z_][a-z0-9_]{0,62}$/

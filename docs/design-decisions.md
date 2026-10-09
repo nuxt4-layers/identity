@@ -104,3 +104,23 @@ Taken while building 2b, within those decisions:
 - **Writes within one tenant are direct statements under row-level security**, so isolation protects writes as well as reads. The runtime role may insert child groups and memberships and update only the columns 2b changes; guard triggers refuse root groups and any ownership except the founding owner of a group created in the same transaction.
 - **Events come from row changes.** SECURITY DEFINER triggers write them to the outbox from the actual change, with the actor and correlation identifier the layer sets for the transaction. The runtime role never writes the outbox, so it cannot forge an event, and a change without a correlation identifier is refused, so none goes unannounced.
 
+
+## 13. Phase 3 decisions
+
+Decided by the project owner on 2026-10-09, before phase 3:
+
+| Question | Decision |
+|---|---|
+| Delivery | Three pull requests: 3a, the approvals engine and every gated change (root groups, owners, reparenting, archiving, settings and approval requirements, membership dates and guest renewal, reinstatement, identity suspension, service identities); 3b, invitations with confirmation of who accepted and join requests; 3c, the identity lifecycle (pause, resume, closure with its grace period), orphaned-group recovery, the recovery hold and break-glass actions and reviews |
+| Who governs platform-wide changes, and hears objections in recovery | A **platform group** the host designates (`platformGroupId`): a standard group whose owners and qualifying members are the platform's operators |
+| How Identity learns of a credential recovery, for the recovery hold | From Authentication's `authentication.credentials-recovered` event, which the host relays to Identity (phase 3c) |
+| How a sign-up through an invitation gets its home tenant | The invitation token is passed to `reserve`, which resolves the inviting tenant on the server (phase 3b) |
+
+Taken while building 3a, within those decisions:
+
+- **Bootstrap with the migration role.** A tenant's first root group, and the tenant itself, are created by the operator's procedures with the migration pool (`provisionIdentityTenant`, `bootstrapIdentityRootGroup`). The runtime role can create neither. Every later root group is a `group.create-root` change approved in the platform group, so the platform group's own root is the one group created without an approval, by the operator, once.
+- **The database computes the digest** over everything the change will do (target, issued identifier, the state it was requested against, route and requirement) and checks it again before applying. Approvers quote the digest they were shown.
+- **Rules are checked twice**: when the change is requested, to give the requester a useful refusal, and when it applies, because days may pass. A change whose rule no longer holds is recorded `rejected`, not left pending.
+- **Settings and approval requirements are separate changes**, so that raising or restoring a requirement is always `critical` and a settings change cannot carry one. A settings change applies only if the settings it was requested against are unchanged.
+- **The owner fallbacks ask for one owner**, even where the group raised its requirement to two, because the fallback applies only when the group cannot meet its own requirement (threat model §4).
+- **Owners are suspended, not removed, by `group.suspend-owner`**, and the last active owner is protected throughout; demotion (`group.remove-owner`) keeps the membership.

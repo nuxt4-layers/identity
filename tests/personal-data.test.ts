@@ -76,7 +76,7 @@ for (const [name, schema] of Object.entries(IDENTITY_DATA_SCHEMAS)) walk(schema,
 const PERSONAL_DATA_KEY = /e-?mail|phone|mobile|address|postcode|post-?code|zip|birth|dob|^age$|gender|sex$|nationality|ethnic|religion|avatar|photo|image|picture|given|family|surname|first-?name|last-?name|nickname|user-?name|display|^name$|locale|zoneinfo|^ip$|ip-?address|bio$|note|comment|message|text|description|title|salutation|signature|label/i
 
 /** The only places a name may appear: a group's own safe name. */
-const SAFE_NAME_PATHS = ['group.name', 'scimGroupStructure.displayName']
+const SAFE_NAME_PATHS = ['group.name', 'pendingChange.target|0.name', 'scimGroupStructure.displayName']
 
 describe('Identity holds no personal data', () => {
   it('covers every record, event and port answer', () => {

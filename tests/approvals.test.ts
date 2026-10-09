@@ -1,7 +1,10 @@
 import { describe, expect, it } from 'vitest'
 import type { PendingChange } from '../contracts'
 import {
+  DEFAULT_GROUP_SETTINGS,
   DEFAULT_REQUIRED_APPROVERS,
+  REQUESTABLE_CHANGE_TYPES,
+  governanceRequestSchema,
   approvalRequirement,
   chooseRoute,
   lowersBelowFloor,
@@ -31,6 +34,8 @@ function change(overrides: Partial<PendingChange> = {}): PendingChange {
     beneficiaryId: beneficiary,
     risk: 'critical',
     justification: { reasonCode: 'succession', reference: null },
+    target: { membershipId: uuidv7() },
+    createdId: null,
     requiredApprovals: 1,
     route: 'approvers',
     approvals: [],
@@ -40,6 +45,7 @@ function change(overrides: Partial<PendingChange> = {}): PendingChange {
     state: 'awaiting-approval',
     correlationId: CORRELATION_ID,
     createdAt: NOW,
+    decidedAt: null,
     version: 1,
     ...overrides,
   }
@@ -62,6 +68,27 @@ describe('pending governance changes', () => {
     const { justification: _omitted, ...withoutJustification } = change()
     expect(pendingChangeSchema.safeParse(withoutJustification).success).toBe(false)
     expect(pendingChangeSchema.safeParse(change({ justification: { reasonCode: 'Because I said so', reference: null } })).success).toBe(false)
+  })
+
+  it('bind the target to the change type', () => {
+    expect(pendingChangeSchema.safeParse(change({ target: { groupId: uuidv7() } })).success).toBe(false)
+    expect(pendingChangeSchema.safeParse(change({ type: 'group.archive', target: { groupId: uuidv7() }, beneficiaryId: null })).success).toBe(true)
+    expect(pendingChangeSchema.safeParse(change({ type: 'group.appoint-owner' })).success).toBe(false)
+  })
+
+  it('accept each requestable change with its own target only, and a strict justification', () => {
+    const justification = { reasonCode: 'restructure', reference: null }
+    expect(REQUESTABLE_CHANGE_TYPES).not.toContain('group.appoint-owner')
+    expect(governanceRequestSchema.safeParse({ type: 'group.archive', target: { groupId: uuidv7() }, justification }).success).toBe(true)
+    expect(governanceRequestSchema.safeParse({ type: 'group.archive', target: { membershipId: uuidv7() }, justification }).success).toBe(false)
+    expect(governanceRequestSchema.safeParse({ type: 'group.archive', target: { groupId: uuidv7(), note: 'x' }, justification }).success).toBe(false)
+    expect(governanceRequestSchema.safeParse({ type: 'group.appoint-owner', target: { membershipId: uuidv7() }, justification }).success).toBe(false)
+    expect(governanceRequestSchema.safeParse({ type: 'group.create-root', target: { tenantId: uuidv7(), name: 'Pay\u200Broll', firstOwnerId: uuidv7() }, justification }).success).toBe(false)
+    // Approval requirements below the floor cannot even be expressed.
+    const approvals = { required: { low: 0, medium: 0, high: 0, critical: 1 }, referenceRequired: false }
+    expect(governanceRequestSchema.safeParse({ type: 'group.change-approvals', target: { groupId: uuidv7(), approvals }, justification }).success).toBe(false)
+    // Settings changes never carry approval requirements.
+    expect(governanceRequestSchema.safeParse({ type: 'group.change-settings', target: { groupId: uuidv7(), settings: DEFAULT_GROUP_SETTINGS }, justification }).success).toBe(false)
   })
 
   it('refuse a change without a reason code, or without a reference where the group requires one', () => {

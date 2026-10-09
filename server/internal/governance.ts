@@ -17,8 +17,9 @@ import { systemClock } from './provisioning'
 
 /**
  * PRIVATE. Group and membership changes that need no second approver
- * (phase 2b). Changes that do (owners, reparenting, archiving, root groups,
- * reinstatement) arrive with the approvals engine in phase 3.
+ * (phase 2b). Changes that may (owners, reparenting, archiving, root groups,
+ * settings, membership dates, reinstatement) go through the approvals
+ * engine in `approvals.ts`.
  *
  * Order of checks, so that errors stay coarse (docs/contracts.md §12):
  * validate input; locate the target (unknown → `forbidden`); authorise

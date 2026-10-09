@@ -14,6 +14,8 @@ import {
   useIdentityPolicy,
 } from '../server/utils/identity-composition'
 import {
+  bootstrapIdentityRootGroup,
+  getIdentityApprovals,
   getIdentityDirectory,
   getIdentityDisclosureContext,
   getIdentityGovernance,
@@ -89,7 +91,22 @@ describe('Identity composition ports', () => {
     expect(() => getIdentityDisclosureContext()).toThrow(IdentityCompositionError)
     expect(() => getIdentityGovernance()).toThrow(IdentityCompositionError)
     expect(() => runIdentityMaintenance()).toThrow(IdentityCompositionError)
-    expect(() => provisionIdentityTenant({ jurisdiction: 'uk-gdpr', dataRegion: 'uk', correlationId: '01a120c9-2cd1-784a-a3d6-f725b2cb2eab' })).toThrow(IdentityCompositionError)
+  })
+
+  it('refuses approvals without the access-decision and approval-policy ports, even with a database', () => {
+    provideIdentityDatabase({ dialect: 'postgres', pool })
+    expect(() => getIdentityApprovals()).toThrow(/IdentityAccessDecision/)
+    provideIdentityAccessDecision({ decide: vi.fn() })
+    expect(() => getIdentityApprovals()).toThrow(/IdentityApprovalPolicy/)
+  })
+
+  it('runs the operator procedures with the pool they are given, never the runtime database', async () => {
+    const operatorPool = { query: vi.fn(), connect: vi.fn().mockRejectedValue(new Error('refused')), end: vi.fn() }
+    await expect(provisionIdentityTenant({ pool: operatorPool, jurisdiction: 'uk-gdpr', dataRegion: 'uk', correlationId: '01a120c9-2cd1-784a-a3d6-f725b2cb2eab' }))
+      .rejects.toMatchObject({ code: 'unavailable' })
+    expect(operatorPool.connect).toHaveBeenCalled()
+    await expect(bootstrapIdentityRootGroup({ pool: operatorPool, tenantId: 'not-an-id', name: 'Company', firstOwnerId: 'x', correlationId: '01a120c9-2cd1-784a-a3d6-f725b2cb2eab' }))
+      .rejects.toMatchObject({ code: 'validation-failed' })
   })
 
   it('refuses governance without the access-decision port, even with a database', () => {

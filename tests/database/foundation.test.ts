@@ -30,7 +30,7 @@ describe.skipIf(!hasDatabase)('identity schema, roles and row-level security', (
   it('creates every table inside the capability-owned schema only', async () => {
     const { rows } = await db.admin.query(`select table_schema, table_name from information_schema.tables where table_schema not in ('pg_catalog', 'information_schema') order by table_name`)
     expect(rows.every(row => row.table_schema === 'identity')).toBe(true)
-    expect(rows.map(row => row.table_name)).toEqual(['group', 'identity', 'identity_external_id', 'membership', 'outbox', 'provisioning_request', 'schema_migration', 'tenant'])
+    expect(rows.map(row => row.table_name)).toEqual(['founding_claim', 'group', 'identity', 'identity_external_id', 'membership', 'outbox', 'pending_change', 'provisioning_request', 'schema_migration', 'tenant'])
   })
 
   it('refuses a runtime role that could bypass row-level security, or the migration role itself', async () => {
@@ -96,5 +96,20 @@ describe.skipIf(!hasDatabase)('identity schema, roles and row-level security', (
     await expect(db.runtime.query(`select identity.enqueue_event('identity.paused', null, 'identity', $1, 1, null, $1, now(), '{}'::jsonb)`, [uuidv7()])).rejects.toThrow(/permission denied/)
     await expect(db.runtime.query(`select identity.lineage_of($1)`, [uuidv7()])).rejects.toThrow(/permission denied/)
     await expect(db.runtime.query(`select identity.describe_group($1) as g`, [uuidv7()])).resolves.toBeDefined()
+  })
+
+  it('never lets the runtime role create tenants, write pending changes or apply a change itself', async () => {
+    const id = uuidv7()
+    await expect(db.runtime.query(`select identity.create_tenant('uk-gdpr', 'uk', null, $1, now())`, [id])).rejects.toThrow(/permission denied/)
+    await expect(db.runtime.query(`select identity.settle_change($1, now(), null)`, [id])).rejects.toThrow(/permission denied/)
+    await expect(db.runtime.query(`select identity.close_change($1, 'cancelled', null, now())`, [id])).rejects.toThrow(/permission denied/)
+    await expect(db.runtime.query(`update identity.pending_change set state = 'applied'`)).rejects.toThrow(/permission denied/)
+    await expect(db.runtime.query(`delete from identity.pending_change`)).rejects.toThrow(/permission denied/)
+  })
+
+  it('fixes the search path of every SECURITY DEFINER function', async () => {
+    const { rows } = await db.admin.query(`select p.proname, p.proconfig from pg_proc p join pg_namespace n on n.oid = p.pronamespace where n.nspname = 'identity' and p.prosecdef`)
+    expect(rows.length).toBeGreaterThan(10)
+    for (const row of rows) expect(row.proconfig, row.proname).toEqual(['search_path=pg_catalog, pg_temp'])
   })
 })

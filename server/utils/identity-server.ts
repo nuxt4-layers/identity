@@ -1,14 +1,16 @@
 import type { IdentityDirectory, IdentityDisclosureContextPort, IdentityProvisioning, PostgresPoolLike } from '../../contracts'
 import { runIdentityMigrations } from '../database/migrations'
+import type { Approvals } from '../internal/approvals'
+import { createApprovals } from '../internal/approvals'
 import type { MaintenanceResult, RelayResult } from '../internal/background'
-import { provisionTenant, relayOutbox, runMaintenance } from '../internal/background'
+import { bootstrapRootGroup, provisionTenant, relayOutbox, runMaintenance } from '../internal/background'
 import { database } from '../internal/database'
 import { createDirectory } from '../internal/directory'
 import { createDisclosure } from '../internal/disclosure'
 import type { Governance } from '../internal/governance'
 import { createGovernance } from '../internal/governance'
 import { createProvisioning } from '../internal/provisioning'
-import { useIdentityAccessDecision, useIdentityDatabase, useIdentityEventPublisher, useIdentityPolicy } from './identity-composition'
+import { useIdentityAccessDecision, useIdentityApprovalPolicy, useIdentityDatabase, useIdentityEventPublisher, useIdentityPolicy } from './identity-composition'
 
 /**
  * Identity's server functions. Each uses the ports the host supplied and
@@ -49,17 +51,56 @@ export function getIdentityGovernance(): Governance {
   return createGovernance({ db: database(useIdentityDatabase()), access: useIdentityAccessDecision(), policy: useIdentityPolicy() })
 }
 
+/**
+ * Governance changes that need approval (docs/contracts.md §8): `request`,
+ * `decide`, `cancel` and `getPendingChange`. Root groups, owners,
+ * reparenting, archiving, settings and approval requirements, membership
+ * dates and reinstatement, identity suspension and service identities.
+ */
+export function getIdentityApprovals(): Approvals {
+  return createApprovals({
+    db: database(useIdentityDatabase()),
+    access: useIdentityAccessDecision(),
+    approvalPolicy: useIdentityApprovalPolicy(),
+    policy: useIdentityPolicy(),
+  })
+}
+
 /** Publishes pending outbox events through the host's publisher. Schedule it frequently. */
 export function relayIdentityOutbox(input: { limit?: number } = {}): Promise<RelayResult> {
   return relayOutbox(database(useIdentityDatabase()), useIdentityEventPublisher(), input.limit ?? 100)
 }
 
-/** Expires what has run out of time: pending identities and lapsed memberships. Schedule it every few minutes. */
+/**
+ * Expires what has run out of time (pending identities, lapsed memberships,
+ * unapproved changes) and applies changes whose published delay has ended.
+ * Schedule it every few minutes.
+ */
 export function runIdentityMaintenance(): Promise<MaintenanceResult> {
   return runMaintenance(database(useIdentityDatabase()))
 }
 
-/** The platform operator's tenant provisioning. Server-only: never expose it over HTTP. */
-export function provisionIdentityTenant(input: { jurisdiction: string, dataRegion: string, externalId?: string | null, correlationId: string }): Promise<{ tenantId: string }> {
-  return provisionTenant(database(useIdentityDatabase()), useIdentityPolicy(), input)
+interface OperatorConnection {
+  /** The **migration** role's pool: the runtime role cannot create tenants or root groups. */
+  pool: PostgresPoolLike
+  schema?: string
+}
+
+/**
+ * The platform operator's tenant provisioning, with the migration pool.
+ * Server-only: never expose it over HTTP.
+ */
+export function provisionIdentityTenant(input: OperatorConnection & { jurisdiction: string, dataRegion: string, externalId?: string | null, correlationId: string }): Promise<{ tenantId: string }> {
+  const { pool, schema, ...tenant } = input
+  return provisionTenant(database({ dialect: 'postgres', pool, schema: schema ?? 'identity' }), useIdentityPolicy(), tenant)
+}
+
+/**
+ * The operator's bootstrap of a tenant's first root group and its founding
+ * owner, with the migration pool. Refused once the tenant has a root group:
+ * later root groups are approved changes. Server-only.
+ */
+export function bootstrapIdentityRootGroup(input: OperatorConnection & { tenantId: string, name: string, firstOwnerId: string, correlationId: string }): Promise<{ groupId: string }> {
+  const { pool, schema, ...group } = input
+  return bootstrapRootGroup(database({ dialect: 'postgres', pool, schema: schema ?? 'identity' }), group)
 }
