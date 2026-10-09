@@ -319,6 +319,8 @@ export function createApprovals({ db, access, approvalPolicy, policy, clock = sy
           },
         }
       }
+      case 'group.appoint-owner':
+        throw new IdentityError('validation-failed', 'recovery is requested through its own path')
       case 'identity.suspend':
       case 'identity.reinstate': {
         const governing = await platformGroup()
@@ -364,6 +366,73 @@ export function createApprovals({ db, access, approvalPolicy, policy, clock = sy
     return chooseRoute({ approvers: input.approvers, qualifyingInGroup: qualifying, parentOwners, tenantOwners })
   }
 
+  /** Whether the identity is active and holds an active membership of the group in effect now. */
+  async function memberInEffect(identityId: string, group: GroupDescription, now: Date): Promise<boolean> {
+    return db.transaction(async (client) => {
+      const status = await signInState(client, identityId)
+      if (status?.state !== 'active') return false
+      const { rows } = await client.query(
+        `select 1 from ${db.schema}.membership where identity_id = $1 and group_id = $2 and state = 'active' and starts_at <= $3 and (ends_at is null or ends_at > $3)`,
+        [identityId, group.groupId, now],
+      )
+      return rows.length > 0
+    }, { tenantIds: [group.tenantId] })
+  }
+
+  /** Records a change through `fn`, under the policy's recovery hold. */
+  async function record(fn: 'record_change' | 'record_recovery', payload: object, tenantId: string, subject: IdentitySubject, correlationId: string, now: Date): Promise<PendingChange> {
+    const { rows } = await db.transaction(async (client) => {
+      await client.query(`select set_config('identity.recovery_hold_hours', $1, true)`, [String(policy.recoveryHoldHours)])
+      return client.query<{ result: unknown }>(`select ${db.schema}.${fn}($1::jsonb) as result`, [JSON.stringify(payload)])
+    }, { tenantIds: [tenantId], actorId: subject.principalId, correlationId, at: now })
+    return pendingChangeSchema.parse(rows[0]!.result)
+  }
+
+  /**
+   * Orphaned-group recovery (iam-integration recovery process). An owner of
+   * the parent group or of the tenant's root group proposes an active
+   * member; another owner above approves, or a published delay applies.
+   * Where no owner exists above, a member may propose the group's
+   * longest-standing active member, after `orphanRecoveryDelayDays`, which
+   * any member may object to. The rules are checked again in the database.
+   */
+  async function recover(subject: IdentitySubject, request: Extract<GovernanceRequest, { type: 'group.appoint-owner' }>, correlationId: string): Promise<PendingChange> {
+    const facts = await membership(request.target.membershipId)
+    const group = await standardGroup(facts.groupId)
+    const now = clock.now()
+    const parent = group.lineage.length > 1 ? group.lineage.at(-2)! : null
+    const root = group.lineage.length > 1 ? group.lineage[0]! : null
+    const above = parent !== null && ((await isOwner(subject.principalId, parent)) || (await isOwner(subject.principalId, root!)))
+    if (!above && !(await memberInEffect(subject.principalId, group, now))) throw new IdentityError('forbidden')
+    await requireActivePerson(subject)
+    if (group.state !== 'orphaned') throw new IdentityError('conflict', 'group is not orphaned')
+    if (!meetsStepUp({ level: subject.assurance.level, phishingResistant: subject.assurance.phishingResistant, authenticatedAt: subject.authenticatedAt }, STEP_UP_REQUIREMENTS.critical, now)) {
+      throw new IdentityError('insufficient-assurance')
+    }
+    let route: ApprovalRoute
+    if (above) {
+      if (facts.identityId === subject.principalId) throw new IdentityError('conflict', 'self-grant')
+      const excluding = [subject.principalId, facts.identityId]
+      route = (await countOwners(parent!, excluding)) > 0 ? 'parent-owner' : (await countOwners(root!, excluding)) > 0 ? 'tenant-owner' : 'published-delay'
+    }
+    else {
+      if (parent !== null && (await countOwners(parent, [])) + (await countOwners(root!, [])) > 0) throw new IdentityError('conflict', 'ask an owner of the parent group')
+      route = 'published-delay'
+    }
+    const delayed = route === 'published-delay'
+    return record('record_recovery', {
+      membershipId: facts.membershipId,
+      requesterId: subject.principalId,
+      reasonCode: request.justification.reasonCode,
+      reference: request.justification.reference,
+      route,
+      delayEndsAt: delayed ? new Date(now.getTime() + policy.orphanRecoveryDelayDays * 86_400_000).toISOString() : null,
+      expiresAt: delayed ? null : new Date(now.getTime() + policy.approvalExpiryDays * 86_400_000).toISOString(),
+      correlationId,
+      at: now.toISOString(),
+    }, group.tenantId, subject, correlationId, now)
+  }
+
   /** Whether `approverId` may decide `change` now, by its route. Asked of Authorisation with a strong read. */
   async function qualifiesFor(change: PendingChange, approverId: string): Promise<boolean> {
     if (change.groupId === null) return false
@@ -377,6 +446,11 @@ export function createApprovals({ db, access, approvalPolicy, policy, clock = sy
         if (!group) return false
         const owners = change.route === 'parent-owner' ? group.lineage.at(-2) : group.lineage[0]
         return owners !== undefined && owners !== group.groupId ? isOwner(approverId, owners) : false
+      }
+      case 'platform-operator': {
+        const platformGroupId = policy.platformGroupId
+        if (!platformGroupId) return false
+        return port(() => approvalPolicy.qualifies({ approverId, permission: 'identity.orphaned-groups:recover', groupId: platformGroupId }), 'approval policy')
       }
       default:
         return false
@@ -398,6 +472,7 @@ export function createApprovals({ db, access, approvalPolicy, policy, clock = sy
       const subject = parse(() => identitySubjectSchema.parse(input.subject))
       const correlationId = parse(() => correlationIdSchema.parse(input.correlationId))
       const request = parse(() => governanceRequestSchema.parse(normaliseRequest(input.request))) as GovernanceRequest
+      if (request.type === 'group.appoint-owner') return recover(subject, request, correlationId)
       const located = await locate(request, subject.principalId)
       const permission = GOVERNANCE_CHANGES[request.type].permission
       await authorise(subject, permission, located.governing.groupId, correlationId)
@@ -430,7 +505,7 @@ export function createApprovals({ db, access, approvalPolicy, policy, clock = sy
       const requirement = approvalRequirement({ risk, inRequestersPersonalGroup: false, groupRequirement: settings.approvals.required })
       const route = await routeFor({ permission, governing: located.governing, approvers: requirement.approvers, requesterId: subject.principalId, beneficiaryId: located.beneficiaryId })
       const hours = (h: number) => new Date(now.getTime() + h * 3_600_000).toISOString()
-      const record = {
+      const change = {
         type: request.type,
         groupId: located.governing.groupId,
         requesterId: subject.principalId,
@@ -448,11 +523,7 @@ export function createApprovals({ db, access, approvalPolicy, policy, clock = sy
         correlationId,
         at: now.toISOString(),
       }
-      const { rows } = await db.transaction(
-        client => client.query<{ result: unknown }>(`select ${db.schema}.record_change($1::jsonb) as result`, [JSON.stringify(record)]),
-        { tenantIds: [located.governing.tenantId], actorId: subject.principalId, correlationId, at: now },
-      )
-      return pendingChangeSchema.parse(rows[0]!.result)
+      return record('record_change', change, located.governing.tenantId, subject, correlationId, now)
     },
 
     /**
@@ -508,7 +579,36 @@ export function createApprovals({ db, access, approvalPolicy, policy, clock = sy
       if (!change) throw new IdentityError('forbidden')
       if (change.requesterId === subject.principalId || change.beneficiaryId === subject.principalId) return change
       if (await qualifiesFor(change, subject.principalId)) return change
+      if (change.type === 'group.appoint-owner' && change.groupId) {
+        const group = await describe(change.groupId)
+        if (group && await memberInEffect(subject.principalId, group, clock.now())) return change
+      }
       throw new IdentityError('forbidden')
+    },
+
+    /**
+     * A member of an orphaned group objects to its recovery during the
+     * published delay. Automatic appointment stops; a qualifying member of
+     * the host's platform group decides before `approvalExpiryDays`.
+     */
+    async object(input: { subject: IdentitySubject, changeId: string, correlationId: string }): Promise<PendingChange> {
+      const subject = parse(() => identitySubjectSchema.parse(input.subject))
+      const correlationId = parse(() => correlationIdSchema.parse(input.correlationId))
+      const change = await load(parse(() => identifierSchema.parse(input.changeId)))
+      const group = change?.type === 'group.appoint-owner' && change.groupId ? await describe(change.groupId) : null
+      const now = clock.now()
+      if (!change || !group || !(await memberInEffect(subject.principalId, group, now))) throw new IdentityError('forbidden')
+      if (change.state !== 'delayed' || change.route !== 'published-delay') throw new IdentityError('conflict', 'not-pending')
+      if (change.requesterId === subject.principalId) throw new IdentityError('conflict', 'own-request')
+      const assurance = { level: subject.assurance.level, phishingResistant: subject.assurance.phishingResistant, authenticatedAt: subject.authenticatedAt }
+      const { rows } = await db.transaction(
+        client => client.query<{ result: unknown }>(
+          `select ${db.schema}.object_to_recovery($1, $2, $3::jsonb, $4, $5, $6) as result`,
+          [change.changeId, subject.principalId, JSON.stringify(assurance), new Date(now.getTime() + policy.approvalExpiryDays * 86_400_000), correlationId, now],
+        ),
+        { tenantIds: [change.tenantId], actorId: subject.principalId, correlationId, at: now },
+      )
+      return pendingChangeSchema.parse(rows[0]!.result)
     },
   }
 }

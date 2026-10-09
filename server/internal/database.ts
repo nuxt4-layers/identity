@@ -70,6 +70,10 @@ const DOMAIN_ERRORS: Readonly<Record<string, IdentityError['code']>> = {
   'identity:own-acceptance': 'conflict',
   'identity:own-request': 'conflict',
   'identity:joining-closed': 'conflict',
+  // Lifecycle, recovery and break-glass (phase 3c)
+  'identity:group-not-orphaned': 'conflict',
+  'identity:recovery-by-owners': 'conflict',
+  'identity:not-longest-member': 'conflict',
 }
 
 /** Maps a database error to a contract error. Unknown failures are `unavailable` and fail closed. */

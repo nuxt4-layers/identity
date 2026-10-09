@@ -64,14 +64,17 @@ export interface MaintenanceResult {
   expiredInvitations: number
   /** Join requests nobody decided in time. */
   expiredJoinRequests: number
+  /** Identities closed at the end of their grace period. */
+  closedIdentities: number
 }
 
 /**
  * Closes `pending` identities whose confirmation window has ended, records
  * memberships past their end date as `ended` (`expired`), expires changes
  * nobody approved in time, applies changes whose published delay has
- * ended, and expires invitations, unconfirmed acceptances (after
- * `confirmationDays`) and join requests past their time. Access already treats lapsed identities and memberships as over;
+ * ended, expires invitations, unconfirmed acceptances (after
+ * `confirmationDays`) and join requests past their time, and closes
+ * identities at the end of their closure grace period. Access already treats lapsed identities and memberships as over;
  * this records it and announces it.
  */
 export async function runMaintenance(db: Database, clock: Clock = systemClock, limit = 500, confirmationDays = 7): Promise<MaintenanceResult> {
@@ -82,8 +85,10 @@ export async function runMaintenance(db: Database, clock: Clock = systemClock, l
     swept: number
     changes: { expired: number, applied: number, rejected: number }
     joining: { invitations: number, joinRequests: number }
+    closed: number
   }>(
-    `select ${db.schema}.expire_pending_identities($1, $2, $3) as expired, ${db.schema}.sweep_lapsed_memberships($1, $2, $3) as swept,
+    `select ${db.schema}.expire_pending_identities($1, $2, $3) as expired, ${db.schema}.close_due_identities($1, $2, $3) as closed,
+       ${db.schema}.sweep_lapsed_memberships($1, $2, $3) as swept,
        ${db.schema}.run_due_changes($2, $3) as changes, ${db.schema}.expire_joining($1, $2, $4, $3) as joining`,
     [correlationId, now, limit, confirmationDays],
   ))
@@ -96,6 +101,7 @@ export async function runMaintenance(db: Database, clock: Clock = systemClock, l
     rejectedChanges: row.changes.rejected,
     expiredInvitations: row.joining.invitations,
     expiredJoinRequests: row.joining.joinRequests,
+    closedIdentities: row.closed,
   }
 }
 
@@ -164,4 +170,31 @@ export async function bootstrapRootGroup(
     )
     return { groupId }
   }, { tenantIds: [tenantId.data], actorId: null, correlationId: input.correlationId, at: now })
+}
+
+/**
+ * Provisions a break-glass identity (ADR-0007): the operator's procedure,
+ * with the **migration** role. It has no personal group, memberships or
+ * roles; Authentication enrols its offline passkey. Writes
+ * `identity.provisioned` (kind `break-glass`).
+ */
+export async function provisionBreakGlass(db: Database, input: { homeTenantId: string, correlationId: string }, clock: Clock = systemClock): Promise<{ identityId: string }> {
+  const homeTenantId = identifierSchema.safeParse(input.homeTenantId)
+  if (!homeTenantId.success) throw new IdentityError('validation-failed')
+  const now = clock.now()
+  return db.transaction(async (client) => {
+    const tenant = await client.query<{ state: string }>(`select state from ${db.schema}.tenant where tenant_id = $1`, [homeTenantId.data])
+    if (tenant.rows[0]?.state !== 'active') throw new IdentityError('validation-failed', 'tenant is not active')
+    const { rows } = await client.query<{ id: string }>(
+      `insert into ${db.schema}.identity (identity_id, kind, state, previous_state, home_tenant_id, personal_group_id, owner_group_id, created_at, state_changed_at, deadline_at, version)
+       values (${db.schema}.uuid_v7(), 'break-glass', 'active', null, $1, null, null, $2, $2, null, 1) returning identity_id::text as id`,
+      [homeTenantId.data, now],
+    )
+    const identityId = rows[0]!.id
+    await client.query(
+      `select ${db.schema}.enqueue_event('identity.provisioned', null, 'identity', $1, 1, null, $2, $3, jsonb_build_object('identityId', $1::uuid, 'kind', 'break-glass', 'homeTenantId', $4::uuid, 'personalGroupId', null))`,
+      [identityId, input.correlationId, now, homeTenantId.data],
+    )
+    return { identityId }
+  }, { tenantIds: [homeTenantId.data], correlationId: input.correlationId, at: now })
 }

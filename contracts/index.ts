@@ -62,6 +62,7 @@ export {
   IDENTITY_KINDS,
   IDENTITY_STATES,
   IDENTITY_TRANSITIONS,
+  REAUTHENTICATION_MAX_AGE_SECONDS,
   SIGN_IN_STATES,
   identityExternalIdSchema,
   identitySchema,

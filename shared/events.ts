@@ -46,6 +46,7 @@ const payloads = {
   'group.owners-changed': z.strictObject({ groupId: id, added: z.array(id).max(64), removed: z.array(id).max(64), changeId: id.nullable(), breakGlassReviewId: id.nullable() }),
   'group.settings-changed': z.strictObject({ groupId: id, changed: z.array(z.enum(['joining', 'pausing', 'guests', 'approvals', 'onArchive', 'departure'])).min(1) }),
   'group.orphaned': z.strictObject({ groupId: id }),
+  'group.recovered': z.strictObject({ groupId: id, changeId: id.nullable(), breakGlassReviewId: id.nullable() }),
   'group.archived': z.strictObject({ groupId: id, changeId: id }),
   'invitation.accepted': z.strictObject({ invitationId: id, groupId: id, invitedBy: id, acceptedBy: id, awaitingConfirmation: z.boolean() }),
   'invitation.refused': z.strictObject({ invitationId: id, groupId: id, refusedBy: id }),
@@ -58,11 +59,13 @@ const payloads = {
     changeType: z.enum(GOVERNANCE_CHANGE_TYPES as [GovernanceChangeType, ...GovernanceChangeType[]]),
     groupId: id.nullable(),
     risk: z.enum(IDENTITY_RISK_LEVELS),
-    route: z.enum(['approvers', 'parent-owner', 'tenant-owner', 'published-delay']),
+    route: z.enum(['approvers', 'parent-owner', 'tenant-owner', 'published-delay', 'platform-operator']),
     requiredApprovals: z.number().int().min(0).max(2),
     delayEndsAt: instantSchema.nullable(),
   }),
   'approval.decided': z.strictObject({ changeId: id, outcome: z.enum(['applied', 'rejected', 'expired', 'cancelled']) }),
+  /** A `critical` change requested within `recoveryHoldHours` of a credential recovery: it cannot apply before `heldUntil`. */
+  'approval.held': z.strictObject({ changeId: id, groupId: id, heldUntil: instantSchema }),
   'break-glass.used': z.strictObject({ reviewId: id, breakGlassIdentityId: id, action: z.enum(BREAK_GLASS_ACTIONS), targetId: id, reasonCode: reasonCodeSchema }),
   'break-glass.review-closed': z.strictObject({ reviewId: id, closedBy: id, outcome: reasonCodeSchema }),
 } as const

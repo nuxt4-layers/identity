@@ -111,5 +111,11 @@ export const identityExternalIdSchema = z.strictObject({
 
 export type IdentityExternalId = z.infer<typeof identityExternalIdSchema>
 
+/**
+ * How recently the person must have authenticated to pause their identity,
+ * request closure or cancel it ("after reauthentication").
+ */
+export const REAUTHENTICATION_MAX_AGE_SECONDS = 900
+
 /** Identity states in which memberships may confer access (subject to their own state). */
 export const SIGN_IN_STATES: readonly IdentityState[] = ['active', 'paused']
