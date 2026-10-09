@@ -62,7 +62,7 @@ describe('Identity public contract', () => {
 
   it('namespaces every event type by aggregate', () => {
     for (const type of contracts.IDENTITY_EVENT_TYPES) {
-      expect(type).toMatch(/^(identity|membership|group|tenant|approval|break-glass)\.[a-z-]+$/)
+      expect(type).toMatch(/^(identity|membership|group|invitation|tenant|approval|break-glass)\.[a-z-]+$/)
     }
   })
 

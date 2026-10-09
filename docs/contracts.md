@@ -101,6 +101,7 @@ Ownership is recorded on the membership (`owner`); Authorisation holds the match
 |---|---|---|
 | `joining.requests` | Members may ask to join; an administrator decides | `true` |
 | `joining.open` | Anyone in the tenant may join without approval | `false` |
+| `joining.invitationAcceptance` | By kind, whether accepting an unbound invitation creates the membership at once (`immediate`) or waits for an administrator to confirm who accepted (`confirm`) | `member` immediate, `guest` confirm |
 | `pausing` | **Reserved** with the single value `allowed`. A later contract MAY add `notice` and `approval`; none can prevent an account-wide pause | `allowed` |
 | `guests.allowed`, `guests.termDays` | Whether guests may join, and their term before renewal (at most the policy's `guestTermDays`) | `true`, 90 |
 | `approvals.required` | Approvers needed beyond the requester, by risk. May be raised, never lowered below the floor (§8) | `low` 0, `medium` 0, `high` 1, `critical` 1 |
@@ -154,6 +155,8 @@ An invitation is a single-use bearer token (improvement register item 20):
 - The token is 256 random bits, delivered as 43 base64url characters, and expires after `invitationExpiryDays` (14).
 - An invitation to an existing identity is bound to it (`inviteeIdentityId`); only that identity may accept. Otherwise any signed-in identity holding the token may accept, being provisioned first if new, with its home tenant set to the inviting tenant.
 - Nobody joins without their own consent, except a service identity added by an administrator.
+- **Confirmation of forwarded links.** Where the group's `joining.invitationAcceptance` for the invitation's kind is `confirm` (guests, by default), an unbound invitation that is accepted waits in `awaiting-confirmation`. An administrator with `identity.invitations:manage` sees who accepted (through Profile's display name) and confirms, which creates the membership, or refuses. Nobody confirms their own acceptance (`refuseConfirmation`); the inviter may. The setting is fixed on the invitation when it is created (`requiresConfirmation`). A confirmation not given within `approvalExpiryDays` (7) expires the invitation.
+- Every acceptance writes `invitation.accepted`, so the inviter is told who joined (or is waiting) whatever the setting; a refusal writes `invitation.refused`.
 - Creation and acceptance answer `INVITATION_ACKNOWLEDGEMENT` whenever the request is well formed, whatever happened, so they cannot be used to probe for groups, identities or tokens.
 - Rate limits: `invitationsPerInviterPerHour` (50), `invitationsPerGroupPerDay` (200), `acceptanceAttemptsPerHour` (20).
 - An invitation may carry `membershipStartsAt` and `membershipEndsAt` for scheduled joiners and leavers.
@@ -248,6 +251,7 @@ Written to Identity's transactional outbox in the same transaction as the change
 | `identity.closure-requested`, `.closure-cancelled`, `.closed` | identity (and `closesAt`, personal group) | Authentication, Profile, Authorisation, domain capabilities |
 | `membership.added`, `.paused`, `.resumed`, `.suspended`, `.reinstated`, `.dates-changed`, `.ended` | membership, identity, group (and kind, owner, dates, end reason, reason code) | Authorisation (caches; default or guest role), Profile, domain capabilities |
 | `group.created`, `.renamed`, `.reparented`, `.owners-changed`, `.settings-changed`, `.orphaned`, `.archived` | group (and lineage, owners, changed settings) | Authorisation; Profile (`settings-changed` for the departure policy) |
+| `invitation.accepted`, `invitation.refused` | invitation, group, inviter, accepting identity, whether it awaits confirmation | Notification capabilities (tell the inviter and, when confirmation is needed, the group's administrators) |
 | `tenant.created`, `tenant.closing` | tenant (and jurisdiction, region) | All members |
 | `approval.requested`, `approval.decided` | change, type, group, risk, route, outcome | Notification capabilities |
 | `break-glass.used`, `break-glass.review-closed` | review, break-glass identity, action, target, reason code | Host alerting (every operator and affected owner), audit |
