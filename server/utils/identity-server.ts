@@ -9,6 +9,8 @@ import { createDirectory } from '../internal/directory'
 import { createDisclosure } from '../internal/disclosure'
 import type { Governance } from '../internal/governance'
 import { createGovernance } from '../internal/governance'
+import type { Joining } from '../internal/joining'
+import { createJoining } from '../internal/joining'
 import { createProvisioning } from '../internal/provisioning'
 import { useIdentityAccessDecision, useIdentityApprovalPolicy, useIdentityDatabase, useIdentityEventPublisher, useIdentityPolicy } from './identity-composition'
 
@@ -66,6 +68,15 @@ export function getIdentityApprovals(): Approvals {
   })
 }
 
+/**
+ * Joining a group (docs/contracts.md §7): `invite`, `accept`, `decline`,
+ * `revoke`, `decideAcceptance` and `listInvitations`; `requestToJoin`,
+ * `withdrawJoinRequest`, `decideJoinRequest` and `listJoinRequests`.
+ */
+export function getIdentityJoining(): Joining {
+  return createJoining({ db: database(useIdentityDatabase()), access: useIdentityAccessDecision(), policy: useIdentityPolicy() })
+}
+
 /** Publishes pending outbox events through the host's publisher. Schedule it frequently. */
 export function relayIdentityOutbox(input: { limit?: number } = {}): Promise<RelayResult> {
   return relayOutbox(database(useIdentityDatabase()), useIdentityEventPublisher(), input.limit ?? 100)
@@ -77,7 +88,7 @@ export function relayIdentityOutbox(input: { limit?: number } = {}): Promise<Rel
  * Schedule it every few minutes.
  */
 export function runIdentityMaintenance(): Promise<MaintenanceResult> {
-  return runMaintenance(database(useIdentityDatabase()))
+  return runMaintenance(database(useIdentityDatabase()), undefined, undefined, useIdentityPolicy().approvalExpiryDays)
 }
 
 interface OperatorConnection {

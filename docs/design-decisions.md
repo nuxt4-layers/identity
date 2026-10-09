@@ -124,3 +124,11 @@ Taken while building 3a, within those decisions:
 - **Settings and approval requirements are separate changes**, so that raising or restoring a requirement is always `critical` and a settings change cannot carry one. A settings change applies only if the settings it was requested against are unchanged.
 - **The owner fallbacks ask for one owner**, even where the group raised its requirement to two, because the fallback applies only when the group cannot meet its own requirement (threat model §4).
 - **Owners are suspended, not removed, by `group.suspend-owner`**, and the last active owner is protected throughout; demotion (`group.remove-owner`) keeps the membership.
+
+Taken while building 3b, within those decisions:
+
+- **Creating an invitation returns its token**, once, to an authorised inviter; only accepting and declining answer the uniform acknowledgement. The contract's earlier wording, which applied the acknowledgement to creation too, could not be met while the inviter must receive the token.
+- **No self-admission.** An inviter cannot accept their own unbound invitation, as nobody confirms their own acceptance or decides their own join request: joining is a membership conferred, and the no-self-grant rule applies.
+- **Every acceptance or decline is an attempt**, counted against `acceptanceAttemptsPerHour` whether the token is real or not, and recorded outside the transaction's outcome so a failed guess still counts.
+- **An unusable token in `reserve` falls back to the default home tenant**, so `reserve` reveals nothing about tokens either; reserving does not use the invitation up.
+- **Join requests and open joining are for people already in the tenant**: their home tenant, or a membership in effect there. Groups elsewhere are `forbidden`, like unknown ones.

@@ -18,6 +18,7 @@ import { identityEventSchema } from '../shared/events'
 import { groupSchema } from '../shared/group'
 import { identityExternalIdSchema, identitySchema } from '../shared/identity'
 import { invitationSchema } from '../shared/invitation'
+import { joinRequestSchema } from '../shared/join-request'
 import { membershipSchema } from '../shared/membership'
 import { pendingChangeSchema } from '../shared/approvals'
 import { provisionedIdentitySchema, provisioningReservationSchema, signInStatusSchema } from '../shared/provisioning'
@@ -118,6 +119,10 @@ export {
   invitationTokenSchema,
   refuseConfirmation,
 } from '../shared/invitation'
+
+// Join requests
+export type { JoinDecisionRefusal, JoinRequestRecord, JoinRequestState } from '../shared/join-request'
+export { JOIN_DECISION_REFUSALS, JOIN_REQUEST_STATES, joinRequestSchema, refuseJoinDecision } from '../shared/join-request'
 
 // Permissions
 export type { IdentityPermissionDefinition, IdentityPermissionName, IdentityRiskLevel } from '../shared/permissions'
@@ -241,6 +246,7 @@ export const IDENTITY_DATA_SCHEMAS: Readonly<Record<string, z.ZodType>> = Object
   group: groupSchema,
   membership: membershipSchema,
   invitation: invitationSchema,
+  joinRequest: joinRequestSchema,
   pendingChange: pendingChangeSchema,
   breakGlassReview: breakGlassReviewSchema,
   event: identityEventSchema,

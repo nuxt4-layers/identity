@@ -30,7 +30,7 @@ describe.skipIf(!hasDatabase)('identity schema, roles and row-level security', (
   it('creates every table inside the capability-owned schema only', async () => {
     const { rows } = await db.admin.query(`select table_schema, table_name from information_schema.tables where table_schema not in ('pg_catalog', 'information_schema') order by table_name`)
     expect(rows.every(row => row.table_schema === 'identity')).toBe(true)
-    expect(rows.map(row => row.table_name)).toEqual(['founding_claim', 'group', 'identity', 'identity_external_id', 'membership', 'outbox', 'pending_change', 'provisioning_request', 'schema_migration', 'tenant'])
+    expect(rows.map(row => row.table_name)).toEqual(['acceptance_attempt', 'founding_claim', 'group', 'identity', 'identity_external_id', 'invitation', 'join_request', 'membership', 'outbox', 'pending_change', 'provisioning_request', 'schema_migration', 'tenant'])
   })
 
   it('refuses a runtime role that could bypass row-level security, or the migration role itself', async () => {

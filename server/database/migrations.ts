@@ -1129,6 +1129,411 @@ grant execute on function
 to {{runtime}};
 `,
   },
+  {
+    id: '0004_invitations_join_requests',
+    sql: `
+-- Invitations ---------------------------------------------------------------
+-- Only the token's SHA-256 digest is stored; the address never reaches
+-- Identity. Created, accepted, declined, revoked, confirmed and expired only
+-- through the SECURITY DEFINER functions below; the runtime role may read
+-- invitations of the tenants set for its transaction.
+
+create table {{schema}}.invitation (
+  invitation_id uuid primary key,
+  group_id uuid not null references {{schema}}."group" (group_id),
+  tenant_id uuid not null references {{schema}}.tenant (tenant_id),
+  kind text not null check (kind in ('member', 'guest')),
+  invitee_identity_id uuid references {{schema}}.identity (identity_id),
+  token_digest text not null unique check (token_digest ~ '^[0-9a-f]{64}$'),
+  invited_by uuid not null references {{schema}}.identity (identity_id),
+  created_at timestamptz not null,
+  expires_at timestamptz not null,
+  membership_starts_at timestamptz,
+  membership_ends_at timestamptz,
+  requires_confirmation boolean not null,
+  state text not null check (state in ('open', 'awaiting-confirmation', 'accepted', 'refused', 'declined', 'revoked', 'expired')),
+  accepted_by uuid references {{schema}}.identity (identity_id),
+  accepted_at timestamptz,
+  confirmed_by uuid references {{schema}}.identity (identity_id),
+  decided_at timestamptz,
+  version integer not null check (version >= 1),
+  check (not (requires_confirmation and invitee_identity_id is not null)),
+  check (state <> 'awaiting-confirmation' or requires_confirmation),
+  check (confirmed_by is null or confirmed_by <> accepted_by),
+  check (membership_ends_at is null or membership_starts_at is null or membership_ends_at > membership_starts_at)
+);
+create index invitation_inviter_idx on {{schema}}.invitation (invited_by, created_at);
+create index invitation_group_idx on {{schema}}.invitation (group_id, created_at);
+create index invitation_open_idx on {{schema}}.invitation (expires_at) where state in ('open', 'awaiting-confirmation');
+
+-- Who tried to accept or decline, for the per-identity rate limit. Never granted.
+create table {{schema}}.acceptance_attempt (
+  identity_id uuid not null,
+  attempted_at timestamptz not null
+);
+create index acceptance_attempt_idx on {{schema}}.acceptance_attempt (identity_id, attempted_at);
+
+create table {{schema}}.join_request (
+  join_request_id uuid primary key,
+  group_id uuid not null references {{schema}}."group" (group_id),
+  tenant_id uuid not null references {{schema}}.tenant (tenant_id),
+  identity_id uuid not null references {{schema}}.identity (identity_id),
+  state text not null check (state in ('open', 'approved', 'refused', 'withdrawn', 'expired')),
+  created_at timestamptz not null,
+  expires_at timestamptz not null,
+  decided_by uuid references {{schema}}.identity (identity_id),
+  decided_at timestamptz,
+  version integer not null check (version >= 1),
+  check (decided_by is null or decided_by <> identity_id),
+  check ((state = 'open') = (decided_at is null))
+);
+create unique index join_request_one_open on {{schema}}.join_request (identity_id, group_id) where state = 'open';
+create index join_request_group_idx on {{schema}}.join_request (group_id, created_at);
+create index join_request_open_idx on {{schema}}.join_request (expires_at) where state = 'open';
+
+alter table {{schema}}.invitation enable row level security;
+alter table {{schema}}.join_request enable row level security;
+create policy tenant_isolation on {{schema}}.invitation using (tenant_id = any ({{schema}}.current_tenant_ids()));
+create policy tenant_isolation on {{schema}}.join_request using (tenant_id = any ({{schema}}.current_tenant_ids()));
+create trigger invitation_version before update on {{schema}}.invitation for each row execute function {{schema}}.bump_version();
+create trigger join_request_version before update on {{schema}}.join_request for each row execute function {{schema}}.bump_version();
+
+create function {{schema}}.invitation_json(i {{schema}}.invitation) returns jsonb language sql stable as $$
+  select jsonb_build_object(
+    'invitationId', i.invitation_id, 'groupId', i.group_id, 'tenantId', i.tenant_id, 'kind', i.kind,
+    'inviteeIdentityId', i.invitee_identity_id, 'tokenDigest', i.token_digest, 'invitedBy', i.invited_by,
+    'createdAt', {{schema}}.iso(i.created_at), 'expiresAt', {{schema}}.iso(i.expires_at),
+    'membershipStartsAt', {{schema}}.iso(i.membership_starts_at), 'membershipEndsAt', {{schema}}.iso(i.membership_ends_at),
+    'requiresConfirmation', i.requires_confirmation, 'state', i.state, 'acceptedBy', i.accepted_by,
+    'acceptedAt', {{schema}}.iso(i.accepted_at), 'confirmedBy', i.confirmed_by, 'decidedAt', {{schema}}.iso(i.decided_at), 'version', i.version)
+$$;
+
+create function {{schema}}.join_request_json(r {{schema}}.join_request) returns jsonb language sql stable as $$
+  select jsonb_build_object(
+    'joinRequestId', r.join_request_id, 'groupId', r.group_id, 'tenantId', r.tenant_id, 'identityId', r.identity_id,
+    'state', r.state, 'createdAt', {{schema}}.iso(r.created_at), 'expiresAt', {{schema}}.iso(r.expires_at),
+    'decidedBy', r.decided_by, 'decidedAt', {{schema}}.iso(r.decided_at), 'version', r.version)
+$$;
+
+-- Rules (internal) ------------------------------------------------------------
+
+create function {{schema}}.set_context(p_actor uuid, p_correlation uuid, p_at timestamptz) returns void language sql volatile as $$
+  select set_config('identity.actor_id', coalesce(p_actor::text, ''), true), set_config('identity.correlation_id', p_correlation::text, true),
+    set_config('identity.at', p_at::text, true), set_config('identity.change_id', '', true)
+$$;
+
+create function {{schema}}.is_active_person(p_identity uuid) returns boolean language sql stable as $$
+  select exists (select 1 from {{schema}}.identity i where i.identity_id = p_identity and i.kind = 'person' and i.state = 'active')
+$$;
+
+-- A group that can take new members now: standard, active, in an active tenant.
+create function {{schema}}.open_for_members(p_group uuid) returns boolean language sql stable as $$
+  select exists (select 1 from {{schema}}."group" g join {{schema}}.tenant t on t.tenant_id = g.tenant_id
+    where g.group_id = p_group and g.kind = 'standard' and g.state = 'active' and t.state = 'active')
+$$;
+
+create function {{schema}}.has_live_membership(p_identity uuid, p_group uuid) returns boolean language sql stable as $$
+  select exists (select 1 from {{schema}}.membership m where m.identity_id = p_identity and m.group_id = p_group and m.state <> 'ended')
+$$;
+
+-- In the tenant: its home tenant, or a membership in effect there.
+create function {{schema}}.in_tenant(p_identity uuid, p_tenant uuid, p_at timestamptz) returns boolean language sql stable as $$
+  select exists (select 1 from {{schema}}.identity i where i.identity_id = p_identity and i.home_tenant_id = p_tenant)
+    or exists (select 1 from {{schema}}.membership m join {{schema}}."group" g on g.group_id = m.group_id
+      where m.identity_id = p_identity and m.tenant_id = p_tenant and g.kind = 'standard' and m.state in ('active', 'paused')
+        and m.starts_at <= p_at and (m.ends_at is null or m.ends_at > p_at))
+$$;
+
+-- Creates the membership an invitation or join request leads to. Returns
+-- false, changing nothing, when it cannot be created now.
+create function {{schema}}.admit(p_identity uuid, p_group uuid, p_kind text, p_starts timestamptz, p_ends timestamptz, p_at timestamptz) returns boolean language plpgsql as $$
+declare v_group {{schema}}."group"%rowtype; v_starts timestamptz := coalesce(p_starts, p_at); v_ends timestamptz := p_ends;
+begin
+  if not {{schema}}.open_for_members(p_group) or not {{schema}}.is_active_person(p_identity) or {{schema}}.has_live_membership(p_identity, p_group) then
+    return false;
+  end if;
+  select * into v_group from {{schema}}."group" where group_id = p_group;
+  if p_kind = 'guest' then
+    if not coalesce((v_group.settings -> 'guests' ->> 'allowed')::boolean, false) then return false; end if;
+    v_ends := coalesce(v_ends, greatest(v_starts, p_at) + make_interval(days => coalesce((v_group.settings -> 'guests' ->> 'termDays')::integer, 90)));
+  end if;
+  if v_ends is not null and (v_ends <= p_at or v_ends <= v_starts) then return false; end if;
+  insert into {{schema}}.membership (membership_id, identity_id, group_id, tenant_id, kind, state, owner, founding_owner, starts_at, ends_at, ended_at, end_reason, reason_code, created_at, version)
+    values ({{schema}}.uuid_v7(), p_identity, p_group, v_group.tenant_id, p_kind, 'active', false, false, v_starts, v_ends, null, null, null, p_at, 1);
+  return true;
+end $$;
+
+create function {{schema}}.attempt_allowed(p_identity uuid, p_at timestamptz, p_limit integer) returns boolean language plpgsql as $$
+begin
+  insert into {{schema}}.acceptance_attempt values (p_identity, p_at);
+  return (select count(*) from {{schema}}.acceptance_attempt a where a.identity_id = p_identity and a.attempted_at > p_at - interval '1 hour') <= p_limit;
+end $$;
+
+-- Invitation functions (SECURITY DEFINER; granted) ----------------------------
+
+create function {{schema}}.create_invitation(p jsonb) returns jsonb language plpgsql volatile security definer set search_path = pg_catalog, pg_temp as $$
+declare
+  i {{schema}}.invitation%rowtype;
+  v_group {{schema}}."group"%rowtype;
+  v_at timestamptz := (p ->> 'at')::timestamptz;
+begin
+  i.invited_by := (p ->> 'invitedBy')::uuid;
+  perform pg_advisory_xact_lock(hashtext('identity-invitations:' || i.invited_by::text));
+  select * into v_group from {{schema}}."group" where group_id = (p ->> 'groupId')::uuid and kind = 'standard';
+  if not found then raise exception 'identity:unknown'; end if;
+  if not {{schema}}.is_active_person(i.invited_by) then raise exception 'identity:unknown'; end if;
+  if not {{schema}}.open_for_members(v_group.group_id) then raise exception 'identity:group-not-active'; end if;
+  i.kind := p ->> 'kind';
+  if i.kind = 'guest' and not coalesce((v_group.settings -> 'guests' ->> 'allowed')::boolean, false) then raise exception 'identity:guests-not-allowed'; end if;
+  i.invitee_identity_id := (p ->> 'inviteeIdentityId')::uuid;
+  if i.invitee_identity_id is not null then
+    if i.invitee_identity_id = i.invited_by then raise exception 'identity:self-grant'; end if;
+    if not exists (select 1 from {{schema}}.identity x where x.identity_id = i.invitee_identity_id and x.kind = 'person' and x.state in ('active', 'paused')) then
+      raise exception 'identity:unknown';
+    end if;
+    if {{schema}}.has_live_membership(i.invitee_identity_id, v_group.group_id) then raise exception 'identity:already-member'; end if;
+  end if;
+  i.membership_starts_at := (p ->> 'membershipStartsAt')::timestamptz;
+  i.membership_ends_at := (p ->> 'membershipEndsAt')::timestamptz;
+  if i.membership_ends_at is not null and (i.membership_ends_at <= v_at or i.membership_ends_at <= coalesce(i.membership_starts_at, v_at)) then
+    raise exception 'identity:invalid-dates';
+  end if;
+  if i.kind = 'guest' and i.membership_ends_at is not null and i.membership_ends_at >
+    greatest(v_at, coalesce(i.membership_starts_at, v_at)) + make_interval(days => (v_group.settings -> 'guests' ->> 'termDays')::integer) then
+    raise exception 'identity:guest-term';
+  end if;
+  if (select count(*) from {{schema}}.invitation x where x.invited_by = i.invited_by and x.created_at > v_at - interval '1 hour') >= (p ->> 'perInviterPerHour')::integer
+    or (select count(*) from {{schema}}.invitation x where x.group_id = v_group.group_id and x.created_at > v_at - interval '1 day') >= (p ->> 'perGroupPerDay')::integer then
+    raise exception 'identity:rate-limited';
+  end if;
+  i.invitation_id := {{schema}}.uuid_v7();
+  i.group_id := v_group.group_id;
+  i.tenant_id := v_group.tenant_id;
+  i.token_digest := p ->> 'tokenDigest';
+  i.created_at := v_at;
+  i.expires_at := (p ->> 'expiresAt')::timestamptz;
+  if i.expires_at <= v_at or i.expires_at > v_at + interval '30 days' then raise exception 'identity:invalid-dates'; end if;
+  i.requires_confirmation := i.invitee_identity_id is null and v_group.settings -> 'joining' -> 'invitationAcceptance' ->> i.kind = 'confirm';
+  i.state := 'open';
+  i.version := 1;
+  insert into {{schema}}.invitation select i.*;
+  return {{schema}}.invitation_json(i);
+end $$;
+
+-- The token's holder accepts. Returns 'rate-limited', or 'done' whatever
+-- else happened, so that nothing can be learnt by probing.
+create function {{schema}}.accept_invitation(p_digest text, p_identity uuid, p_correlation uuid, p_at timestamptz, p_limit integer)
+returns text language plpgsql volatile security definer set search_path = pg_catalog, pg_temp as $$
+declare i {{schema}}.invitation%rowtype; v_version integer; v_waiting boolean;
+begin
+  if not {{schema}}.attempt_allowed(p_identity, p_at, p_limit) then return 'rate-limited'; end if;
+  select * into i from {{schema}}.invitation where token_digest = p_digest for update;
+  -- Nobody accepts their own invitation (no self-grant), nor one bound to someone else.
+  if not found or i.state <> 'open' or i.expires_at <= p_at or i.invited_by = p_identity
+    or (i.invitee_identity_id is not null and i.invitee_identity_id <> p_identity)
+    or not {{schema}}.open_for_members(i.group_id) or not {{schema}}.is_active_person(p_identity)
+    or {{schema}}.has_live_membership(p_identity, i.group_id) then
+    return 'done';
+  end if;
+  perform {{schema}}.set_context(p_identity, p_correlation, p_at);
+  v_waiting := i.requires_confirmation;
+  if v_waiting then
+    update {{schema}}.invitation set state = 'awaiting-confirmation', accepted_by = p_identity, accepted_at = p_at
+      where invitation_id = i.invitation_id returning version into v_version;
+  else
+    if not {{schema}}.admit(p_identity, i.group_id, i.kind, i.membership_starts_at, i.membership_ends_at, p_at) then return 'done'; end if;
+    update {{schema}}.invitation set state = 'accepted', accepted_by = p_identity, accepted_at = p_at, decided_at = p_at
+      where invitation_id = i.invitation_id returning version into v_version;
+  end if;
+  perform {{schema}}.enqueue_event('invitation.accepted', p_identity, 'invitation', i.invitation_id, v_version, i.tenant_id, p_correlation, p_at,
+    jsonb_build_object('invitationId', i.invitation_id, 'groupId', i.group_id, 'invitedBy', i.invited_by, 'acceptedBy', p_identity, 'awaitingConfirmation', v_waiting));
+  return 'done';
+end $$;
+
+create function {{schema}}.decline_invitation(p_digest text, p_identity uuid, p_at timestamptz, p_limit integer)
+returns text language plpgsql volatile security definer set search_path = pg_catalog, pg_temp as $$
+declare i {{schema}}.invitation%rowtype;
+begin
+  if not {{schema}}.attempt_allowed(p_identity, p_at, p_limit) then return 'rate-limited'; end if;
+  select * into i from {{schema}}.invitation where token_digest = p_digest for update;
+  if found and i.state = 'open' and i.expires_at > p_at and (i.invitee_identity_id is null or i.invitee_identity_id = p_identity) then
+    update {{schema}}.invitation set state = 'declined', decided_at = p_at where invitation_id = i.invitation_id;
+  end if;
+  return 'done';
+end $$;
+
+create function {{schema}}.get_invitation(p_invitation uuid) returns jsonb language sql stable security definer set search_path = pg_catalog, pg_temp as $$
+  select {{schema}}.invitation_json(i) from {{schema}}.invitation i where i.invitation_id = p_invitation
+$$;
+
+-- An administrator, already authorised by the layer, revokes an invitation not yet decided.
+create function {{schema}}.revoke_invitation(p_invitation uuid, p_actor uuid, p_at timestamptz)
+returns jsonb language plpgsql volatile security definer set search_path = pg_catalog, pg_temp as $$
+declare i {{schema}}.invitation%rowtype;
+begin
+  select * into i from {{schema}}.invitation where invitation_id = p_invitation for update;
+  if not found or not {{schema}}.is_active_person(p_actor) then raise exception 'identity:unknown'; end if;
+  if i.state not in ('open', 'awaiting-confirmation') then raise exception 'identity:not-pending'; end if;
+  update {{schema}}.invitation set state = 'revoked', decided_at = p_at where invitation_id = p_invitation returning * into i;
+  return {{schema}}.invitation_json(i);
+end $$;
+
+-- An administrator, already authorised by the layer, confirms or refuses who accepted.
+create function {{schema}}.decide_invitation(p_invitation uuid, p_admin uuid, p_decision text, p_correlation uuid, p_at timestamptz, p_confirm_days integer)
+returns jsonb language plpgsql volatile security definer set search_path = pg_catalog, pg_temp as $$
+declare i {{schema}}.invitation%rowtype; v_version integer;
+begin
+  select * into i from {{schema}}.invitation where invitation_id = p_invitation for update;
+  if not found or not {{schema}}.is_active_person(p_admin) then raise exception 'identity:unknown'; end if;
+  if i.state = 'awaiting-confirmation' and i.accepted_at + make_interval(days => p_confirm_days) <= p_at then
+    update {{schema}}.invitation set state = 'expired', decided_at = p_at where invitation_id = p_invitation returning * into i;
+    return {{schema}}.invitation_json(i);
+  end if;
+  if i.state <> 'awaiting-confirmation' then raise exception 'identity:not-pending'; end if;
+  if i.accepted_by = p_admin then raise exception 'identity:own-acceptance'; end if;
+  perform {{schema}}.set_context(p_admin, p_correlation, p_at);
+  if p_decision = 'confirm' then
+    if not {{schema}}.admit(i.accepted_by, i.group_id, i.kind, i.membership_starts_at, i.membership_ends_at, p_at) then
+      raise exception 'identity:not-eligible';
+    end if;
+    update {{schema}}.invitation set state = 'accepted', confirmed_by = p_admin, decided_at = p_at where invitation_id = p_invitation returning * into i;
+  elsif p_decision = 'refuse' then
+    update {{schema}}.invitation set state = 'refused', confirmed_by = p_admin, decided_at = p_at where invitation_id = p_invitation returning * into i;
+    perform {{schema}}.enqueue_event('invitation.refused', p_admin, 'invitation', i.invitation_id, i.version, i.tenant_id, p_correlation, p_at,
+      jsonb_build_object('invitationId', i.invitation_id, 'groupId', i.group_id, 'refusedBy', p_admin));
+  else
+    raise exception 'identity:unknown';
+  end if;
+  return {{schema}}.invitation_json(i);
+end $$;
+
+-- The inviting tenant of an open, unbound invitation, for a sign-up's home tenant. Null otherwise.
+create function {{schema}}.invitation_home_tenant(p_digest text, p_at timestamptz) returns uuid language sql stable security definer set search_path = pg_catalog, pg_temp as $$
+  select i.tenant_id from {{schema}}.invitation i join {{schema}}.tenant t on t.tenant_id = i.tenant_id
+  where i.token_digest = p_digest and i.state = 'open' and i.expires_at > p_at and i.invitee_identity_id is null and t.state = 'active'
+$$;
+
+-- Join requests (SECURITY DEFINER; granted) -------------------------------------
+
+-- Someone in the group's tenant asks to join: joins at once where joining is
+-- open, otherwise records a request where requests are allowed.
+create function {{schema}}.request_join(p_group uuid, p_identity uuid, p_correlation uuid, p_at timestamptz, p_expires timestamptz)
+returns jsonb language plpgsql volatile security definer set search_path = pg_catalog, pg_temp as $$
+declare v_group {{schema}}."group"%rowtype; r {{schema}}.join_request%rowtype;
+begin
+  select * into v_group from {{schema}}."group" where group_id = p_group and kind = 'standard';
+  if not found or not {{schema}}.is_active_person(p_identity) or not {{schema}}.in_tenant(p_identity, v_group.tenant_id, p_at) then
+    raise exception 'identity:unknown';
+  end if;
+  if not {{schema}}.open_for_members(p_group) then raise exception 'identity:group-not-active'; end if;
+  if {{schema}}.has_live_membership(p_identity, p_group) then raise exception 'identity:already-member'; end if;
+  perform {{schema}}.set_context(p_identity, p_correlation, p_at);
+  if coalesce((v_group.settings -> 'joining' ->> 'open')::boolean, false) then
+    perform {{schema}}.admit(p_identity, p_group, 'member', null, null, p_at);
+    return jsonb_build_object('outcome', 'joined', 'joinRequestId', null);
+  end if;
+  if not coalesce((v_group.settings -> 'joining' ->> 'requests')::boolean, false) then raise exception 'identity:joining-closed'; end if;
+  select * into r from {{schema}}.join_request where identity_id = p_identity and group_id = p_group and state = 'open' and expires_at > p_at;
+  if found then return jsonb_build_object('outcome', 'requested', 'joinRequestId', r.join_request_id); end if;
+  -- A request past its time that maintenance has not yet expired is expired now, and announced.
+  for r in select * from {{schema}}.join_request where identity_id = p_identity and group_id = p_group and state = 'open' for update loop
+    perform {{schema}}.close_join_request(r, 'expired', null, null, p_correlation, p_at);
+  end loop;
+  insert into {{schema}}.join_request values ({{schema}}.uuid_v7(), p_group, v_group.tenant_id, p_identity, 'open', p_at, p_expires, null, null, 1) returning * into r;
+  perform {{schema}}.enqueue_event('join-request.created', p_identity, 'join-request', r.join_request_id, 1, r.tenant_id, p_correlation, p_at,
+    jsonb_build_object('joinRequestId', r.join_request_id, 'groupId', p_group, 'identityId', p_identity));
+  return jsonb_build_object('outcome', 'requested', 'joinRequestId', r.join_request_id);
+end $$;
+
+create function {{schema}}.close_join_request(r {{schema}}.join_request, p_state text, p_actor uuid, p_decider uuid, p_correlation uuid, p_at timestamptz)
+returns {{schema}}.join_request language plpgsql as $$
+declare v {{schema}}.join_request%rowtype;
+begin
+  update {{schema}}.join_request set state = p_state, decided_by = p_decider, decided_at = p_at where join_request_id = r.join_request_id returning * into v;
+  perform {{schema}}.enqueue_event('join-request.decided', p_actor, 'join-request', v.join_request_id, v.version, v.tenant_id, p_correlation, p_at,
+    jsonb_build_object('joinRequestId', v.join_request_id, 'groupId', v.group_id, 'identityId', v.identity_id, 'outcome', p_state));
+  return v;
+end $$;
+
+create function {{schema}}.withdraw_join_request(p_request uuid, p_identity uuid, p_correlation uuid, p_at timestamptz)
+returns jsonb language plpgsql volatile security definer set search_path = pg_catalog, pg_temp as $$
+declare r {{schema}}.join_request%rowtype;
+begin
+  select * into r from {{schema}}.join_request where join_request_id = p_request for update;
+  if not found or r.identity_id <> p_identity then raise exception 'identity:unknown'; end if;
+  if r.state <> 'open' then raise exception 'identity:not-pending'; end if;
+  return {{schema}}.join_request_json({{schema}}.close_join_request(r, 'withdrawn', p_identity, null, p_correlation, p_at));
+end $$;
+
+-- An administrator, already authorised by the layer, approves or refuses.
+create function {{schema}}.decide_join_request(p_request uuid, p_admin uuid, p_decision text, p_correlation uuid, p_at timestamptz)
+returns jsonb language plpgsql volatile security definer set search_path = pg_catalog, pg_temp as $$
+declare r {{schema}}.join_request%rowtype;
+begin
+  select * into r from {{schema}}.join_request where join_request_id = p_request for update;
+  if not found or not {{schema}}.is_active_person(p_admin) then raise exception 'identity:unknown'; end if;
+  if r.state = 'open' and r.expires_at <= p_at then
+    return {{schema}}.join_request_json({{schema}}.close_join_request(r, 'expired', null, null, p_correlation, p_at));
+  end if;
+  if r.state <> 'open' then raise exception 'identity:not-pending'; end if;
+  if r.identity_id = p_admin then raise exception 'identity:own-request'; end if;
+  perform {{schema}}.set_context(p_admin, p_correlation, p_at);
+  if p_decision = 'approve' then
+    if not {{schema}}.admit(r.identity_id, r.group_id, 'member', null, null, p_at) then raise exception 'identity:not-eligible'; end if;
+    return {{schema}}.join_request_json({{schema}}.close_join_request(r, 'approved', p_admin, p_admin, p_correlation, p_at));
+  elsif p_decision = 'refuse' then
+    return {{schema}}.join_request_json({{schema}}.close_join_request(r, 'refused', p_admin, p_admin, p_correlation, p_at));
+  end if;
+  raise exception 'identity:unknown';
+end $$;
+
+create function {{schema}}.get_join_request(p_request uuid) returns jsonb language sql stable security definer set search_path = pg_catalog, pg_temp as $$
+  select {{schema}}.join_request_json(r) from {{schema}}.join_request r where r.join_request_id = p_request
+$$;
+
+-- Maintenance: invitations and join requests past their time, and old attempts.
+create function {{schema}}.expire_joining(p_correlation uuid, p_at timestamptz, p_confirm_days integer, p_limit integer)
+returns jsonb language plpgsql volatile security definer set search_path = pg_catalog, pg_temp as $$
+declare r {{schema}}.join_request%rowtype; v_invitations integer; v_requests integer := 0;
+begin
+  with due as (
+    select invitation_id from {{schema}}.invitation
+    where (state = 'open' and expires_at <= p_at) or (state = 'awaiting-confirmation' and accepted_at + make_interval(days => p_confirm_days) <= p_at)
+    order by expires_at limit p_limit for update skip locked
+  )
+  update {{schema}}.invitation i set state = 'expired', decided_at = p_at from due where i.invitation_id = due.invitation_id;
+  get diagnostics v_invitations = row_count;
+  for r in select * from {{schema}}.join_request where state = 'open' and expires_at <= p_at order by expires_at limit p_limit for update skip locked loop
+    perform {{schema}}.close_join_request(r, 'expired', null, null, p_correlation, p_at);
+    v_requests := v_requests + 1;
+  end loop;
+  delete from {{schema}}.acceptance_attempt where attempted_at < p_at - interval '1 day';
+  return jsonb_build_object('invitations', v_invitations, 'joinRequests', v_requests);
+end $$;
+
+-- Privileges ----------------------------------------------------------------
+
+revoke all on all functions in schema {{schema}} from public;
+grant select on {{schema}}.invitation, {{schema}}.join_request to {{runtime}};
+grant execute on function
+  {{schema}}.iso(timestamptz),
+  {{schema}}.invitation_json({{schema}}.invitation),
+  {{schema}}.join_request_json({{schema}}.join_request),
+  {{schema}}.create_invitation(jsonb),
+  {{schema}}.accept_invitation(text, uuid, uuid, timestamptz, integer),
+  {{schema}}.decline_invitation(text, uuid, timestamptz, integer),
+  {{schema}}.get_invitation(uuid),
+  {{schema}}.revoke_invitation(uuid, uuid, timestamptz),
+  {{schema}}.decide_invitation(uuid, uuid, text, uuid, timestamptz, integer),
+  {{schema}}.invitation_home_tenant(text, timestamptz),
+  {{schema}}.request_join(uuid, uuid, uuid, timestamptz, timestamptz),
+  {{schema}}.withdraw_join_request(uuid, uuid, uuid, timestamptz),
+  {{schema}}.decide_join_request(uuid, uuid, text, uuid, timestamptz),
+  {{schema}}.get_join_request(uuid),
+  {{schema}}.expire_joining(uuid, timestamptz, integer, integer)
+to {{runtime}};
+`,
+  },
 ]
 
 const IDENTIFIER_PATTERN = /^[a-z_][a-z0-9_]{0,62}$/

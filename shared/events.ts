@@ -49,6 +49,8 @@ const payloads = {
   'group.archived': z.strictObject({ groupId: id, changeId: id }),
   'invitation.accepted': z.strictObject({ invitationId: id, groupId: id, invitedBy: id, acceptedBy: id, awaitingConfirmation: z.boolean() }),
   'invitation.refused': z.strictObject({ invitationId: id, groupId: id, refusedBy: id }),
+  'join-request.created': z.strictObject({ joinRequestId: id, groupId: id, identityId: id }),
+  'join-request.decided': z.strictObject({ joinRequestId: id, groupId: id, identityId: id, outcome: z.enum(['approved', 'refused', 'withdrawn', 'expired']) }),
   'tenant.created': z.strictObject({ tenantId: id, jurisdiction: registryCodeSchema, dataRegion: registryCodeSchema }),
   'tenant.closing': z.strictObject({ tenantId: id }),
   'approval.requested': z.strictObject({
@@ -68,7 +70,7 @@ const payloads = {
 export type IdentityEventType = keyof typeof payloads
 export const IDENTITY_EVENT_TYPES = Object.freeze(Object.keys(payloads) as IdentityEventType[])
 
-export const IDENTITY_AGGREGATE_TYPES = ['identity', 'membership', 'group', 'invitation', 'tenant', 'approval', 'break-glass-review'] as const
+export const IDENTITY_AGGREGATE_TYPES = ['identity', 'membership', 'group', 'invitation', 'join-request', 'tenant', 'approval', 'break-glass-review'] as const
 
 const envelope = {
   /** UUIDv7; consumers are idempotent by it. */

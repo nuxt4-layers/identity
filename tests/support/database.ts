@@ -54,6 +54,8 @@ export async function createTestDatabase(): Promise<TestDatabase> {
   const admin = new pg.Pool({ connectionString: adminTarget.toString(), max: 4 })
   await runIdentityMigrations(admin, 'identity', runtimeRole)
   const runtime = new pg.Pool({ connectionString: runtimeTarget.toString(), max: 4 })
+  // An idle connection closed by the server while the database is dropped is expected, not a test failure.
+  for (const pool of [admin, runtime]) pool.on('error', () => {})
 
   return {
     admin,
