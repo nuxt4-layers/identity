@@ -12,6 +12,7 @@
 
 import type { z } from 'zod'
 import { breakGlassReviewSchema } from '../shared/break-glass'
+import { groupMembersPageSchema, groupViewSchema, identityExportSchema, selfViewSchema } from '../shared/administration'
 import { actorContextSchema, groupDescriptionSchema } from '../shared/directory'
 import { disclosureContextSchema } from '../shared/disclosure'
 import { identityEventSchema } from '../shared/events'
@@ -200,6 +201,18 @@ export {
   standingOf,
 } from '../shared/disclosure'
 
+// Administration (HTTP endpoints and read functions)
+export type { GroupMember, GroupMembersPage, GroupView, IdentityExport, IdentitySubjectResolver, SelfView } from '../shared/administration'
+export {
+  IDENTITY_API_PREFIX,
+  IDENTITY_CORRELATION_HEADER,
+  groupMemberSchema,
+  groupMembersPageSchema,
+  groupViewSchema,
+  identityExportSchema,
+  selfViewSchema,
+} from '../shared/administration'
+
 // Consumed ports
 export type {
   AccessDecision,
@@ -259,4 +272,8 @@ export const IDENTITY_DATA_SCHEMAS: Readonly<Record<string, z.ZodType>> = Object
   disclosureContext: disclosureContextSchema,
   scimUserStructure: scimUserStructureSchema,
   scimGroupStructure: scimGroupStructureSchema,
+  selfView: selfViewSchema,
+  groupView: groupViewSchema,
+  groupMembersPage: groupMembersPageSchema,
+  identityExport: identityExportSchema,
 })

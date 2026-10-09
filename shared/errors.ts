@@ -36,6 +36,12 @@ export interface IdentityErrorBody {
   code: IdentityErrorCode
   /** Localisation key for the user-facing message, e.g. `identity.error.forbidden`. */
   messageKey: string
+  /**
+   * For `conflict` and `validation-failed` only: which rule, as a code
+   * (`last-owner`, `self-grant`, `forbidden-character`), for the caller
+   * already entitled to learn it. Never present on `forbidden`.
+   */
+  reason?: string
 }
 
 export function isIdentityErrorCode(value: unknown): value is IdentityErrorCode {

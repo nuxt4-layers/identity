@@ -16,6 +16,7 @@
     "./capability": "./capability.json"
   },
   "files": [
+    "app",
     "server",
     "shared",
     "contracts",
@@ -42,6 +43,7 @@
   "devDependencies": {
     "@types/node": "^24.13.6",
     "@types/pg": "^8.23.1",
+    "h3": "^1.15.11",
     "nuxt": "^4.5.2",
     "pg": "^8.23.1",
     "typescript": "^6.0.3",

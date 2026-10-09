@@ -7,11 +7,13 @@ import {
   provideIdentityDatabase,
   provideIdentityEventPublisher,
   provideIdentityPolicy,
+  provideIdentitySubjectResolver,
   useIdentityAccessDecision,
   useIdentityApprovalPolicy,
   useIdentityDatabase,
   useIdentityEventPublisher,
   useIdentityPolicy,
+  useIdentitySubjectResolver,
 } from '../server/utils/identity-composition'
 import {
   bootstrapIdentityRootGroup,
@@ -42,6 +44,7 @@ describe('Identity composition ports', () => {
     ['IdentityAccessDecision', useIdentityAccessDecision],
     ['IdentityApprovalPolicy', useIdentityApprovalPolicy],
     ['IdentityEventPublisher', useIdentityEventPublisher],
+    ['IdentitySubjectResolver', useIdentitySubjectResolver],
   ] as const)('fails closed when %s is absent', (port, use) => {
     expect(() => use()).toThrow(IdentityCompositionError)
     expect(() => use()).toThrow(new RegExp(port))
@@ -66,6 +69,7 @@ describe('Identity composition ports', () => {
     expect(() => provideIdentityAccessDecision({} as never)).toThrow(TypeError)
     expect(() => provideIdentityApprovalPolicy({ riskOf: vi.fn(), qualifies: vi.fn() } as never)).toThrow(TypeError)
     expect(() => provideIdentityEventPublisher({} as never)).toThrow(TypeError)
+    expect(() => provideIdentitySubjectResolver({} as never)).toThrow(TypeError)
   })
 
   it('supplies each port once valid', () => {

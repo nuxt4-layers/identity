@@ -13,6 +13,8 @@ import type { Governance } from '../internal/governance'
 import { createGovernance } from '../internal/governance'
 import type { Joining } from '../internal/joining'
 import { createJoining } from '../internal/joining'
+import type { Queries } from '../internal/queries'
+import { createQueries, createScimStructure, exportIdentity } from '../internal/queries'
 import type { Lifecycle } from '../internal/lifecycle'
 import { createLifecycle, recordCredentialRecovery } from '../internal/lifecycle'
 import { createProvisioning } from '../internal/provisioning'
@@ -102,6 +104,29 @@ export function recordIdentityCredentialRecovery(input: { identityId: string, re
 /** Break-glass actions and their reviews (ADR-0007; docs/contracts.md §13): `act` and `closeReview`. */
 export function getIdentityBreakGlass(): BreakGlass {
   return createBreakGlass({ db: database(useIdentityDatabase()), access: useIdentityAccessDecision(), policy: useIdentityPolicy() })
+}
+
+/**
+ * Reads for administration (docs/contracts.md §19): `self` (the signed-in
+ * identity's own view), `group`, `members` and `changes`, each authorised
+ * through the access-decision port.
+ */
+export function getIdentityQueries(): Queries {
+  return createQueries({ db: database(useIdentityDatabase()), access: useIdentityAccessDecision() })
+}
+
+/**
+ * Identity's part of a data-subject access request: the identity, its
+ * external identifiers and every membership. Server-only; call it from the
+ * verified request in iam-integration's data-subject request process.
+ */
+export function exportIdentityData(input: { identityId: string, correlationId: string }) {
+  return exportIdentity(database(useIdentityDatabase()), input)
+}
+
+/** The structural part of SCIM users and groups, for the SCIM endpoint the host composes. Server-only. */
+export function getIdentityScimStructure() {
+  return createScimStructure(database(useIdentityDatabase()))
 }
 
 /** Publishes pending outbox events through the host's publisher. Schedule it frequently. */
