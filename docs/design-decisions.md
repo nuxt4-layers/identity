@@ -132,3 +132,12 @@ Taken while building 3b, within those decisions:
 - **Every acceptance or decline is an attempt**, counted against `acceptanceAttemptsPerHour` whether the token is real or not, and recorded outside the transaction's outcome so a failed guess still counts.
 - **An unusable token in `reserve` falls back to the default home tenant**, so `reserve` reveals nothing about tokens either; reserving does not use the invitation up.
 - **Join requests and open joining are for people already in the tenant**: their home tenant, or a membership in effect there. Groups elsewhere are `forbidden`, like unknown ones.
+
+Taken while building 3c, within those decisions:
+
+- **Orphaning is recorded, not inferred.** Triggers on owners' memberships and identities record a group `orphaned` the moment no owner is in effect, and `active` again when one returns, announcing both. Archiving ends memberships without orphaning.
+- **Recovery's authority is Identity's own record of ownership**, not a permission from Authorisation, because the people the process names (owners above, the group's members) are facts Identity holds. A member's proposal is limited to the longest-standing member and to the published delay, which is the only place someone may propose themselves; an objection by any member moves the decision to the platform group.
+- **Recovery's published delay is `orphanRecoveryDelayDays`** (14) on every route that falls back to a delay.
+- **The recovery hold is enforced in the database**: it marks the change when recorded, announces it (`approval.held`), and holds an approved change as `delayed` until the hold ends.
+- **Closure withdraws the person's pending work** at the end of the grace period: their pending changes are cancelled, invitations they sent or accepted revoked, and their join requests withdrawn, so nothing they started can take effect after they are gone.
+- **Pausing never asks permission and never fails for being the last owner**; it reports the groups it orphans, as the pausing process requires a warning.

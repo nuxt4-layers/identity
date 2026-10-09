@@ -16,11 +16,16 @@ import {
 import {
   bootstrapIdentityRootGroup,
   getIdentityApprovals,
+  getIdentityBreakGlass,
   getIdentityDirectory,
   getIdentityDisclosureContext,
   getIdentityGovernance,
+  getIdentityJoining,
+  getIdentityLifecycle,
   getIdentityProvisioning,
+  provisionIdentityBreakGlass,
   provisionIdentityTenant,
+  recordIdentityCredentialRecovery,
   relayIdentityOutbox,
   runIdentityMaintenance,
 } from '../server/utils/identity-server'
@@ -100,12 +105,23 @@ describe('Identity composition ports', () => {
     expect(() => getIdentityApprovals()).toThrow(/IdentityApprovalPolicy/)
   })
 
+  it('fails closed in the lifecycle, credential-recovery and break-glass functions without their ports', () => {
+    expect(() => getIdentityLifecycle()).toThrow(IdentityCompositionError)
+    expect(() => recordIdentityCredentialRecovery({ identityId: '01a120c9-2cd1-784a-a3d6-f725b2cb2eab', recoveredAt: new Date().toISOString(), correlationId: '01a120c9-2cd1-784a-a3d6-f725b2cb2eab' }))
+      .toThrow(IdentityCompositionError)
+    provideIdentityDatabase({ dialect: 'postgres', pool })
+    expect(() => getIdentityBreakGlass()).toThrow(/IdentityAccessDecision/)
+    expect(() => getIdentityJoining()).toThrow(/IdentityAccessDecision/)
+  })
+
   it('runs the operator procedures with the pool they are given, never the runtime database', async () => {
     const operatorPool = { query: vi.fn(), connect: vi.fn().mockRejectedValue(new Error('refused')), end: vi.fn() }
     await expect(provisionIdentityTenant({ pool: operatorPool, jurisdiction: 'uk-gdpr', dataRegion: 'uk', correlationId: '01a120c9-2cd1-784a-a3d6-f725b2cb2eab' }))
       .rejects.toMatchObject({ code: 'unavailable' })
     expect(operatorPool.connect).toHaveBeenCalled()
     await expect(bootstrapIdentityRootGroup({ pool: operatorPool, tenantId: 'not-an-id', name: 'Company', firstOwnerId: 'x', correlationId: '01a120c9-2cd1-784a-a3d6-f725b2cb2eab' }))
+      .rejects.toMatchObject({ code: 'validation-failed' })
+    await expect(provisionIdentityBreakGlass({ pool: operatorPool, homeTenantId: 'not-an-id', correlationId: '01a120c9-2cd1-784a-a3d6-f725b2cb2eab' }))
       .rejects.toMatchObject({ code: 'validation-failed' })
   })
 

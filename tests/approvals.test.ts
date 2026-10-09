@@ -3,6 +3,7 @@ import type { PendingChange } from '../contracts'
 import {
   DEFAULT_GROUP_SETTINGS,
   DEFAULT_REQUIRED_APPROVERS,
+  GOVERNANCE_CHANGE_TYPES,
   REQUESTABLE_CHANGE_TYPES,
   governanceRequestSchema,
   approvalRequirement,
@@ -73,16 +74,18 @@ describe('pending governance changes', () => {
   it('bind the target to the change type', () => {
     expect(pendingChangeSchema.safeParse(change({ target: { groupId: uuidv7() } })).success).toBe(false)
     expect(pendingChangeSchema.safeParse(change({ type: 'group.archive', target: { groupId: uuidv7() }, beneficiaryId: null })).success).toBe(true)
-    expect(pendingChangeSchema.safeParse(change({ type: 'group.appoint-owner' })).success).toBe(false)
+    expect(pendingChangeSchema.safeParse(change({ type: 'group.appoint-owner' })).success).toBe(true)
+    expect(pendingChangeSchema.safeParse(change({ type: 'group.appoint-owner', target: { groupId: uuidv7() } })).success).toBe(false)
   })
 
   it('accept each requestable change with its own target only, and a strict justification', () => {
     const justification = { reasonCode: 'restructure', reference: null }
-    expect(REQUESTABLE_CHANGE_TYPES).not.toContain('group.appoint-owner')
+    expect([...REQUESTABLE_CHANGE_TYPES].sort()).toEqual([...GOVERNANCE_CHANGE_TYPES].sort())
     expect(governanceRequestSchema.safeParse({ type: 'group.archive', target: { groupId: uuidv7() }, justification }).success).toBe(true)
     expect(governanceRequestSchema.safeParse({ type: 'group.archive', target: { membershipId: uuidv7() }, justification }).success).toBe(false)
     expect(governanceRequestSchema.safeParse({ type: 'group.archive', target: { groupId: uuidv7(), note: 'x' }, justification }).success).toBe(false)
-    expect(governanceRequestSchema.safeParse({ type: 'group.appoint-owner', target: { membershipId: uuidv7() }, justification }).success).toBe(false)
+    expect(governanceRequestSchema.safeParse({ type: 'group.appoint-owner', target: { membershipId: uuidv7() }, justification }).success).toBe(true)
+    expect(governanceRequestSchema.safeParse({ type: 'group.unknown', target: { membershipId: uuidv7() }, justification }).success).toBe(false)
     expect(governanceRequestSchema.safeParse({ type: 'group.create-root', target: { tenantId: uuidv7(), name: 'Pay\u200Broll', firstOwnerId: uuidv7() }, justification }).success).toBe(false)
     // Approval requirements below the floor cannot even be expressed.
     const approvals = { required: { low: 0, medium: 0, high: 0, critical: 1 }, referenceRequired: false }

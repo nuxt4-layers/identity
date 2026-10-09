@@ -39,7 +39,7 @@ A group name is organisational, not personal, data. A group could still be named
 |---|---|---|
 | `person` | Exactly one, created atomically on confirmation | The usual case |
 | `service` | None | Owned by a group (`ownerGroupId`); credentials from Authentication's service-credential flow when one exists |
-| `break-glass` | None | ADR-0007: no standing privileges, passkey only, two actions (§13) |
+| `break-glass` | None | ADR-0007: no standing privileges, passkey only, three actions (§13) |
 
 | State | Meaning |
 |---|---|
@@ -52,11 +52,11 @@ Permitted transitions are listed in `IDENTITY_TRANSITIONS`; anything else is ref
 |---|---|---|---|
 | `confirm` | `pending` | `active` | system, on Authentication's confirmation |
 | `expire` | `pending` | `closed` | system |
-| `pause` / `resume` | `active` / `paused` | `paused` / `active` | the person only |
+| `pause` / `resume` | `active` / `paused` | `paused` / `active` | the person only (pausing after reauthentication) |
 | `suspend` | `active`, `paused` | `suspended` | an administrator with approval at `high` risk, or a break-glass account |
 | `reinstate` | `suspended` | the previous state | an administrator with approval |
 | `request-closure` | `active`, `paused`, `suspended` | `closure-pending` | the person only, after reauthentication |
-| `cancel-closure` | `closure-pending` | the previous state | the person only |
+| `cancel-closure` | `closure-pending` | the previous state | the person only, after reauthentication |
 | `close` | `closure-pending` | `closed` | system, at the end of the grace period |
 
 `previousState` holds one level. A person who was paused, then suspended, then asked for closure and cancelled it returns to `suspended`; reinstatement then restores `active`.
@@ -82,6 +82,8 @@ Every identity has a **home tenant**: the inviting tenant for a sign-up through 
 ### 5.1 Kinds and states
 
 A `personal` group has one permanent member, no parent, no name and no settings, and is always `active`; it follows its identity. A `standard` group has a safe name and settings, and is `active`, `orphaned` (no active owner; governed only through recovery) or `archived` (read-only).
+
+A group becomes `orphaned` as soon as no owner is in effect (an active membership, within its dates, of an active person), whatever caused it: an owner paused, suspended, closed or lapsed. It becomes `active` again when one returns or is appointed (§8.3). Both are recorded in the same transaction as the change that caused them and announced (`group.orphaned`, `group.recovered`). Archiving does not orphan a group.
 
 ### 5.2 Hierarchy
 
@@ -185,7 +187,7 @@ Identity owns pending **governance** changes; Authorisation owns pending role an
 5. **Requirement.** `approvalRequirement` takes the group's setting, never below the floor (`low` and `medium`: 0 beyond a requester who is never the beneficiary; `high` and `critical`: 1). Raising it is `critical`.
 6. **Routes** (`chooseRoute`): qualifying approvers in the group; otherwise an owner of the parent group; otherwise an owner of the tenant's root group; otherwise a **published delay** of `publishedDelayHighHours` (72) or `publishedDelayCriticalHours` (168) that the requester cannot shorten and may cancel. A change awaiting an approver expires after `approvalExpiryDays` (7).
 7. **Personal-group sovereignty.** In their own personal group a person needs **no approver**, including to share what it owns with others (sharing itself is an Authorisation grant, under the same rule), but must still **step up** to the risk level's assurance, which protects them if a session is stolen.
-8. **Recovery hold.** After credential recovery, `critical` governance changes the recovered person requests are held for `recoveryHoldHours` (72) and announced to their groups' co-owners.
+8. **Recovery hold.** After credential recovery, `critical` governance changes the recovered person requests are held for `recoveryHoldHours` (72) and announced to their groups' co-owners. The host relays Authentication's `authentication.credentials-recovered` to `recordIdentityCredentialRecovery` (§18). A held change records `heldUntil`; `approval.held` announces it; approved before the hold ends, it waits as `delayed` and maintenance applies it when the hold ends. The database applies the hold itself, never shorter than 24 hours.
 
 ### 8.1 Requesting a change
 
@@ -204,6 +206,7 @@ A requester submits a `governanceRequestSchema`: the change `type`, its `target`
 | `membership.schedule` | a membership, new `startsAt` and `endsAt` (a guest's end within the group's guest term and the policy's) | the group | the member |
 | `identity.suspend`, `identity.reinstate` | a person or service identity (never oneself) | the platform group | the identity |
 | `service-identity.create` | the owning group | the group | none |
+| `group.appoint-owner` | an active member's membership of an orphaned group (§8.3) | owners above the group, or a platform operator on objection | the member |
 
 The order of checks keeps errors coarse (§12): the target is located (unknown → `forbidden`), the requester authorised through the access-decision port on the group that decides (refused → `forbidden`), and only then are rules reported (`conflict`): self-grant, a rule about the target, a missing reference (`validation-failed`). The risk is the higher of Identity's (§9) and the host catalogue's; the requester must meet its step-up (`insufficient-assurance`). Only an active person requests or approves.
 
@@ -216,6 +219,15 @@ The **route** is chosen when the change is recorded: `none` (it applies at once,
 Pending changes are recorded, decided, cancelled and applied only through SECURITY DEFINER functions; the runtime role may read them, under row-level security, and nothing else. Those functions check again what the database can know, whatever the layer sends: the risk is never below Identity's declared risk; the requirement never below the group's; no self-grant; a justification and, where required, a reference; a published delay of at least 24 hours (`high`) or 72 hours (`critical`); an approver who is an active person, neither requester nor beneficiary, not deciding twice, and, for the owner fallbacks, an owner now. The digest is computed by the database over everything the change will do and checked again before it applies, so an altered record cannot be applied.
 
 When a change applies, every rule is checked again: the group is still active, the membership has not ended, the last owner stays, the hierarchy has no cycle and is within `maxHierarchyDepth` including the moved group's descendants, the guest term holds. If one no longer holds, the change is `rejected` and `approval.decided` says so. Every event the change causes carries the change's correlation identifier and, where the payload has one, its `changeId`.
+
+### 8.3 Orphaned-group recovery
+
+Following iam-integration's recovery process, `group.appoint-owner` makes an active member (never a guest) the owner of an orphaned group. It is `critical`, and the authority comes from Identity's own record of ownership rather than a permission:
+
+1. An **owner of the parent group or of the tenant's root group** proposes any active member but themselves. Another owner above approves (`parent-owner`, then `tenant-owner`); where none exists, the change applies after a published delay of `orphanRecoveryDelayDays` (14).
+2. Where **no owner exists above** (an orphaned root group, or no owners left above it), an active member may propose the group's **longest-standing active member**, themselves included, through the published delay only. During the delay any active member but the proposer may **object** (`object`), recorded as an approval record with decision `object`: automatic appointment stops and the change moves to the `platform-operator` route, decided by a qualifying member of the host's platform group before `approvalExpiryDays`.
+
+Members of the group may see its recovery to object to it. A break-glass identity may also appoint an owner at once (§13). Recovery never reads a personal group, and personal groups are never orphaned.
 
 ## 9. Permissions
 
@@ -287,11 +299,11 @@ Written to Identity's transactional outbox in the same transaction as the change
 | `identity.suspended`, `.reinstated` | identity, reason code, change or break-glass review | Authentication, Profile, Authorisation |
 | `identity.closure-requested`, `.closure-cancelled`, `.closed` | identity (and `closesAt`, personal group) | Authentication, Profile, Authorisation, domain capabilities |
 | `membership.added`, `.paused`, `.resumed`, `.suspended`, `.reinstated`, `.dates-changed`, `.ended` | membership, identity, group (and kind, owner, dates, end reason, reason code) | Authorisation (caches; default or guest role), Profile, domain capabilities |
-| `group.created`, `.renamed`, `.reparented`, `.owners-changed`, `.settings-changed`, `.orphaned`, `.archived` | group (and lineage, owners, changed settings) | Authorisation; Profile (`settings-changed` for the departure policy) |
+| `group.created`, `.renamed`, `.reparented`, `.owners-changed`, `.settings-changed`, `.orphaned`, `.recovered`, `.archived` | group (and lineage, owners, changed settings, the change or break-glass review behind a recovery) | Authorisation; Profile (`settings-changed` for the departure policy) |
 | `invitation.accepted`, `invitation.refused` | invitation, group, inviter, accepting identity, whether it awaits confirmation | Notification capabilities (tell the inviter and, when confirmation is needed, the group's administrators) |
 | `join-request.created`, `join-request.decided` | request, group, identity, outcome | Notification capabilities (tell the group's administrators, then the person) |
 | `tenant.created`, `tenant.closing` | tenant (and jurisdiction, region) | All members |
-| `approval.requested`, `approval.decided` | change, type, group, risk, route, outcome | Notification capabilities |
+| `approval.requested`, `approval.decided`, `approval.held` | change, type, group, risk, route, outcome, the end of a recovery hold | Notification capabilities (tell approvers; on a hold, the group's co-owners; on recovery, the group's members) |
 | `break-glass.used`, `break-glass.review-closed` | review, break-glass identity, action, target, reason code | Host alerting (every operator and affected owner), audit |
 
 `PROFILE_CONSUMED_EVENT_TYPES` and `AUTHENTICATION_CONSUMED_EVENT_TYPES` list each consumer's events. Access never depends on an event arriving: Authorisation reads membership state from the directory at decision time.
@@ -310,7 +322,7 @@ Written to Identity's transactional outbox in the same transaction as the change
 
 ## 13. Break-glass (ADR-0007)
 
-A `break-glass` identity has no personal group, memberships or roles, and signs in with a passkey only (`passkeyOnly` in the sign-in status). `refuseBreakGlass` allows exactly three actions: suspend an identity, suspend a membership, and appoint an owner to an **orphaned** standard group, never itself. Each takes effect at once, writes `break-glass.used` with a reason code, and opens a review (`breakGlassReviewSchema`) that only another person, who did not hold the passkey, can close (`mayCloseReview`, permission `identity.break-glass-reviews:close`). Authentication rotates the passkey after each use.
+A `break-glass` identity has no personal group, memberships or roles, and signs in with a passkey only (`passkeyOnly` in the sign-in status). The operator provisions it with the migration role (`provisionIdentityBreakGlass`). `refuseBreakGlass` allows exactly three actions: suspend an identity, suspend a membership, and appoint an owner to an **orphaned** standard group, never itself. Each needs phishing-resistant aal2 within 15 minutes, takes effect at once, writes `break-glass.used` with a reason code, names the review in the events it causes (`breakGlassReviewId`), and opens a review (`breakGlassReviewSchema`) that only another person, who did not hold the passkey, can close (`mayCloseReview`, permission `identity.break-glass-reviews:close` in the platform group). Authentication rotates the passkey after each use. Reviews are never granted to the runtime role.
 
 ## 14. Conformance suite
 
@@ -352,15 +364,18 @@ The host calls these on the server; none is an HTTP route. Each uses the supplie
 | `relayIdentityOutbox({ limit? })` | Publishes up to `limit` (default 100) outbox events in order, at least once. Returns `{ published, failed }` | `unavailable` |
 | `getIdentityDisclosureContext()` | The disclosure-context port (§10.3), for the host's adapter to Profile | `validation-failed`, `unavailable` |
 | `getIdentityGovernance()` | Changes that need no second approver: `createGroup` (child group, `identity.groups:create`; the creator becomes founding owner), `renameGroup` (`identity.groups:rename`), `pauseMembership`, `resumeMembership` and `leaveGroup` (the member's own), and `actOnMember` (`remove` or `suspend` a member who is not an owner, with a reason code). Each takes the authenticated `subject` and a `correlationId` | `validation-failed` (malformed input, unsafe name), `forbidden` (unknown target, or refused by Authorisation), `insufficient-assurance`, `conflict` (last owner, personal group, confusable sibling name, depth, owner needing approval), `unavailable` |
-| `getIdentityApprovals()` | Governance changes that need approval (§8): `request({ subject, request, correlationId })`, `decide({ subject, changeId, changeDigest, decision, correlationId })`, `cancel({ subject, changeId, correlationId })` (the requester only) and `getPendingChange({ subject, changeId })`. Needs the access-decision and approval-policy ports | `validation-failed`, `forbidden`, `insufficient-assurance`, `conflict` (a rule, `self-grant`, not pending, a different digest, already decided), `unavailable` (including a permission missing from the host's catalogue) |
+| `getIdentityApprovals()` | Governance changes that need approval (§8): `request({ subject, request, correlationId })`, `decide({ subject, changeId, changeDigest, decision, correlationId })`, `cancel({ subject, changeId, correlationId })` (the requester only), `object({ subject, changeId, correlationId })` (a member, against an orphaned group's recovery) and `getPendingChange({ subject, changeId })`. Needs the access-decision and approval-policy ports | `validation-failed`, `forbidden`, `insufficient-assurance`, `conflict` (a rule, `self-grant`, not pending, a different digest, already decided), `unavailable` (including a permission missing from the host's catalogue) |
 | `getIdentityJoining()` | Joining a group (§7, §7.1): `invite` (returns the token once), `accept` and `decline` (the token's holder; always `INVITATION_ACKNOWLEDGEMENT`), `revoke`, `decideAcceptance` (`confirm` or `refuse` who accepted), `listInvitations`; `requestToJoin` (`joined` or `requested`), `withdrawJoinRequest`, `decideJoinRequest` (`approve` or `refuse`), `listJoinRequests` | `validation-failed`, `forbidden`, `insufficient-assurance`, `conflict` (guests not allowed, already a member, own acceptance or request, not pending, joining closed), `rate-limited`, `unavailable` |
-| `runIdentityMaintenance()` | Closes `pending` identities past their confirmation window (`identity.provisioning-expired`), records memberships past their end date as `ended` (`expired`, `membership.ended`), expires changes nobody approved in time, applies changes whose published delay has ended, and expires invitations, acceptances unconfirmed after `approvalExpiryDays` and join requests. Returns the counts | `unavailable` |
+| `getIdentityLifecycle()` | The person's own lifecycle (§3): `pauseIdentity` (returns the groups it orphans), `resumeIdentity`, `requestClosure` (`leaveGroupsOrphaned` to proceed as a last owner; closes after `closureGraceDays`), `cancelClosure`, `lastOwnerOf`. Pausing, requesting and cancelling closure need authentication within 15 minutes (`REAUTHENTICATION_MAX_AGE_SECONDS`) | `validation-failed`, `forbidden`, `insufficient-assurance`, `conflict` (`last-owner`, wrong state), `unavailable` |
+| `recordIdentityCredentialRecovery({ identityId, recoveredAt, correlationId })` | Records Authentication's `authentication.credentials-recovered` for the recovery hold (§8). Returns whether the identity is known | `validation-failed`, `unavailable` |
+| `getIdentityBreakGlass()` | Break-glass (§13): `act` and `closeReview` | `validation-failed`, `forbidden`, `insufficient-assurance`, `conflict`, `unavailable` |
+| `provisionIdentityBreakGlass({ pool, schema?, homeTenantId, correlationId })` | The operator's provisioning of a break-glass identity, with the migration pool. Writes `identity.provisioned` (kind `break-glass`) | `validation-failed`, `unavailable` |
+| `runIdentityMaintenance()` | Closes `pending` identities past their confirmation window (`identity.provisioning-expired`), records memberships past their end date as `ended` (`expired`, `membership.ended`), expires changes nobody approved in time, applies changes whose published delay has ended, and expires invitations, acceptances unconfirmed after `approvalExpiryDays` and join requests, and closes identities at the end of their grace period (memberships end; their pending changes, invitations and join requests are withdrawn; `identity.closed`). Returns the counts | `unavailable` |
 | `provisionIdentityTenant({ pool, schema?, jurisdiction, dataRegion, externalId?, correlationId })` | The platform operator's tenant provisioning, with the **migration** pool; the runtime role cannot create tenants. The jurisdiction and region must be registered in the policy. Writes `tenant.created` | `validation-failed`, `unavailable` |
 | `bootstrapIdentityRootGroup({ pool, schema?, tenantId, name, firstOwnerId, correlationId })` | The operator's bootstrap of a tenant's first root group and founding owner (an active person), with the migration pool. Refused once the tenant has a root group: later ones are `group.create-root` changes. Writes `group.created` and `membership.added` with a null actor | `validation-failed`, `conflict`, `unavailable` |
 
 `IdentityError` carries the contract code; its message is for the server log only.
 
-The identity lifecycle (pause, resume, closure), orphaned-group recovery, the recovery hold and break-glass actions follow in phase 3c.
 
 ## 17. Versioning
 
@@ -375,3 +390,4 @@ Changes before 1.0:
 | 3a | `provisionIdentityTenant` takes the migration `pool`; the runtime role can no longer create tenants | Yes, for hosts that called it |
 | 3b | `provisioningReserveInputSchema` gains `invitationToken`; `joinRequestSchema`, `join-request.*` events and the `join-request` aggregate are added | No |
 | 3b | `INVITATION_ACKNOWLEDGEMENT` answers acceptance and declining only; creating an invitation returns its token | Clarification |
+| 3c | `group.appoint-owner` is requestable; route `platform-operator`; approval decision `object`; `group.recovered` and `approval.held` events; `REAUTHENTICATION_MAX_AGE_SECONDS` | No |

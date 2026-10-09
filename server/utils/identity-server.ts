@@ -3,7 +3,9 @@ import { runIdentityMigrations } from '../database/migrations'
 import type { Approvals } from '../internal/approvals'
 import { createApprovals } from '../internal/approvals'
 import type { MaintenanceResult, RelayResult } from '../internal/background'
-import { bootstrapRootGroup, provisionTenant, relayOutbox, runMaintenance } from '../internal/background'
+import { bootstrapRootGroup, provisionBreakGlass, provisionTenant, relayOutbox, runMaintenance } from '../internal/background'
+import type { BreakGlass } from '../internal/break-glass'
+import { createBreakGlass } from '../internal/break-glass'
 import { database } from '../internal/database'
 import { createDirectory } from '../internal/directory'
 import { createDisclosure } from '../internal/disclosure'
@@ -11,6 +13,8 @@ import type { Governance } from '../internal/governance'
 import { createGovernance } from '../internal/governance'
 import type { Joining } from '../internal/joining'
 import { createJoining } from '../internal/joining'
+import type { Lifecycle } from '../internal/lifecycle'
+import { createLifecycle, recordCredentialRecovery } from '../internal/lifecycle'
 import { createProvisioning } from '../internal/provisioning'
 import { useIdentityAccessDecision, useIdentityApprovalPolicy, useIdentityDatabase, useIdentityEventPublisher, useIdentityPolicy } from './identity-composition'
 
@@ -77,6 +81,29 @@ export function getIdentityJoining(): Joining {
   return createJoining({ db: database(useIdentityDatabase()), access: useIdentityAccessDecision(), policy: useIdentityPolicy() })
 }
 
+/**
+ * The person's own lifecycle (docs/contracts.md §3.1): `pauseIdentity`,
+ * `resumeIdentity`, `requestClosure`, `cancelClosure` and `lastOwnerOf`.
+ * Reserved to the person; no permission is asked.
+ */
+export function getIdentityLifecycle(): Lifecycle {
+  return createLifecycle({ db: database(useIdentityDatabase()), policy: useIdentityPolicy() })
+}
+
+/**
+ * Records a credential recovery Authentication reported
+ * (`authentication.credentials-recovered`), for the recovery hold on
+ * `critical` changes. Call it from the host's event relay.
+ */
+export function recordIdentityCredentialRecovery(input: { identityId: string, recoveredAt: string, correlationId: string }): Promise<{ recorded: boolean }> {
+  return recordCredentialRecovery(database(useIdentityDatabase()), input)
+}
+
+/** Break-glass actions and their reviews (ADR-0007; docs/contracts.md §13): `act` and `closeReview`. */
+export function getIdentityBreakGlass(): BreakGlass {
+  return createBreakGlass({ db: database(useIdentityDatabase()), access: useIdentityAccessDecision(), policy: useIdentityPolicy() })
+}
+
 /** Publishes pending outbox events through the host's publisher. Schedule it frequently. */
 export function relayIdentityOutbox(input: { limit?: number } = {}): Promise<RelayResult> {
   return relayOutbox(database(useIdentityDatabase()), useIdentityEventPublisher(), input.limit ?? 100)
@@ -114,4 +141,13 @@ export function provisionIdentityTenant(input: OperatorConnection & { jurisdicti
 export function bootstrapIdentityRootGroup(input: OperatorConnection & { tenantId: string, name: string, firstOwnerId: string, correlationId: string }): Promise<{ groupId: string }> {
   const { pool, schema, ...group } = input
   return bootstrapRootGroup(database({ dialect: 'postgres', pool, schema: schema ?? 'identity' }), group)
+}
+
+/**
+ * The operator's provisioning of a break-glass identity (ADR-0007), with the
+ * migration pool. Server-only.
+ */
+export function provisionIdentityBreakGlass(input: OperatorConnection & { homeTenantId: string, correlationId: string }): Promise<{ identityId: string }> {
+  const { pool, schema, ...identity } = input
+  return provisionBreakGlass(database({ dialect: 'postgres', pool, schema: schema ?? 'identity' }), identity)
 }

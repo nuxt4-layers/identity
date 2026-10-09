@@ -62,9 +62,11 @@ export const GOVERNANCE_CHANGE_TYPES = Object.keys(GOVERNANCE_CHANGES) as Govern
  * - `approvers` — qualifying principals in the group (or covering it);
  * - `parent-owner`, `tenant-owner` — the single-owner fallbacks;
  * - `published-delay` — no approver exists; the change applies when the delay ends unless cancelled;
+ * - `platform-operator` — a member objected to an orphaned group's recovery during its delay; a
+ *   qualifying member of the host's platform group decides;
  * - `none` — no approver needed (low or medium risk, or the requester's own personal group).
  */
-export const APPROVAL_ROUTES = ['approvers', 'parent-owner', 'tenant-owner', 'published-delay', 'none'] as const
+export const APPROVAL_ROUTES = ['approvers', 'parent-owner', 'tenant-owner', 'published-delay', 'platform-operator', 'none'] as const
 export type ApprovalRoute = typeof APPROVAL_ROUTES[number]
 
 export const PENDING_CHANGE_STATES = ['awaiting-approval', 'delayed', 'applied', 'rejected', 'expired', 'cancelled'] as const
@@ -80,8 +82,7 @@ const onIdentity = z.strictObject({ identityId: id })
 
 /**
  * The target of each change: what a requester submits, and what approvers
- * see and approve (its digest). `group.appoint-owner` belongs to orphaned-
- * group recovery and is not requested through this schema.
+ * see and approve (its digest).
  */
 export const GOVERNANCE_TARGETS = {
   /** A root group in `tenantId`, named `name`, with `firstOwnerId` as its founding owner. */
@@ -106,6 +107,14 @@ export const GOVERNANCE_TARGETS = {
   'identity.reinstate': onIdentity,
   /** A service identity owned by `groupId`. */
   'service-identity.create': z.strictObject({ groupId: id }),
+  /**
+   * Orphaned-group recovery: makes the active member holding `membershipId`
+   * an owner of the orphaned group. Proposed by an owner of the parent group
+   * or of the tenant's root group; where neither exists, by a member, for
+   * the group's longest-standing active member, after a published delay any
+   * member may object to.
+   */
+  'group.appoint-owner': onMembership,
 } as const satisfies Partial<Record<GovernanceChangeType, z.ZodType>>
 
 export type RequestableChangeType = keyof typeof GOVERNANCE_TARGETS
@@ -151,7 +160,8 @@ export const assuranceRecordSchema = z.strictObject({
 
 export const approvalRecordSchema = z.strictObject({
   approverId: identifierSchema,
-  decision: z.enum(['approve', 'reject']),
+  /** `object`: a member's objection to an orphaned group's recovery, which sends it to a platform operator. */
+  decision: z.enum(['approve', 'reject', 'object']),
   decidedAt: instantSchema,
   assurance: assuranceRecordSchema,
   /** The digest of the change as the approver saw it. */
