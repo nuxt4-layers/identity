@@ -82,7 +82,7 @@ describe('Identity holds no personal data', () => {
   it('covers every record, event and port answer', () => {
     expect(Object.keys(IDENTITY_DATA_SCHEMAS).sort()).toEqual([
       'actorContext', 'breakGlassReview', 'disclosureContext', 'event', 'group', 'groupDescription', 'identity',
-      'identityExternalId', 'invitation', 'membership', 'pendingChange', 'provisionedIdentity', 'provisioningReservation',
+      'identityExternalId', 'invitation', 'joinRequest', 'membership', 'pendingChange', 'provisionedIdentity', 'provisioningReservation',
       'scimGroupStructure', 'scimUserStructure', 'signInStatus', 'tenant',
     ])
     expect(leaves.length).toBeGreaterThan(200)

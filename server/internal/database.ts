@@ -63,6 +63,13 @@ const DOMAIN_ERRORS: Readonly<Record<string, IdentityError['code']>> = {
   'identity:membership-ended': 'conflict',
   'identity:invalid-dates': 'conflict',
   'identity:guest-term': 'conflict',
+  // Invitations and join requests (phase 3b)
+  'identity:rate-limited': 'rate-limited',
+  'identity:guests-not-allowed': 'conflict',
+  'identity:already-member': 'conflict',
+  'identity:own-acceptance': 'conflict',
+  'identity:own-request': 'conflict',
+  'identity:joining-closed': 'conflict',
 }
 
 /** Maps a database error to a contract error. Unknown failures are `unavailable` and fail closed. */

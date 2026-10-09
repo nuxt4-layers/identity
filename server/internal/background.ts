@@ -60,22 +60,32 @@ export interface MaintenanceResult {
   /** Changes whose published delay ended: applied, or rejected because a rule no longer held. */
   appliedChanges: number
   rejectedChanges: number
+  /** Invitations past their expiry, or awaiting confirmation for longer than `approvalExpiryDays`. */
+  expiredInvitations: number
+  /** Join requests nobody decided in time. */
+  expiredJoinRequests: number
 }
 
 /**
  * Closes `pending` identities whose confirmation window has ended, records
  * memberships past their end date as `ended` (`expired`), expires changes
- * nobody approved in time, and applies changes whose published delay has
- * ended. Access already treats lapsed identities and memberships as over;
+ * nobody approved in time, applies changes whose published delay has
+ * ended, and expires invitations, unconfirmed acceptances (after
+ * `confirmationDays`) and join requests past their time. Access already treats lapsed identities and memberships as over;
  * this records it and announces it.
  */
-export async function runMaintenance(db: Database, clock: Clock = systemClock, limit = 500): Promise<MaintenanceResult> {
+export async function runMaintenance(db: Database, clock: Clock = systemClock, limit = 500, confirmationDays = 7): Promise<MaintenanceResult> {
   const correlationId = randomUUID()
   const now = clock.now()
-  const { rows } = await db.transaction(client => client.query<{ expired: number, swept: number, changes: { expired: number, applied: number, rejected: number } }>(
+  const { rows } = await db.transaction(client => client.query<{
+    expired: number
+    swept: number
+    changes: { expired: number, applied: number, rejected: number }
+    joining: { invitations: number, joinRequests: number }
+  }>(
     `select ${db.schema}.expire_pending_identities($1, $2, $3) as expired, ${db.schema}.sweep_lapsed_memberships($1, $2, $3) as swept,
-       ${db.schema}.run_due_changes($2, $3) as changes`,
-    [correlationId, now, limit],
+       ${db.schema}.run_due_changes($2, $3) as changes, ${db.schema}.expire_joining($1, $2, $4, $3) as joining`,
+    [correlationId, now, limit, confirmationDays],
   ))
   const row = rows[0]!
   return {
@@ -84,6 +94,8 @@ export async function runMaintenance(db: Database, clock: Clock = systemClock, l
     expiredChanges: row.changes.expired,
     appliedChanges: row.changes.applied,
     rejectedChanges: row.changes.rejected,
+    expiredInvitations: row.joining.invitations,
+    expiredJoinRequests: row.joining.joinRequests,
   }
 }
 

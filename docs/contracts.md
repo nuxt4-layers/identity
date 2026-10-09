@@ -157,9 +157,16 @@ An invitation is a single-use bearer token (improvement register item 20):
 - Nobody joins without their own consent, except a service identity added by an administrator.
 - **Confirmation of forwarded links.** Where the group's `joining.invitationAcceptance` for the invitation's kind is `confirm` (guests, by default), an unbound invitation that is accepted waits in `awaiting-confirmation`. An administrator with `identity.invitations:manage` sees who accepted (through Profile's display name) and confirms, which creates the membership, or refuses. Nobody confirms their own acceptance (`refuseConfirmation`); the inviter may. The setting is fixed on the invitation when it is created (`requiresConfirmation`). A confirmation not given within `approvalExpiryDays` (7) expires the invitation.
 - Every acceptance writes `invitation.accepted`, so the inviter is told who joined (or is waiting) whatever the setting; a refusal writes `invitation.refused`.
-- Creation and acceptance answer `INVITATION_ACKNOWLEDGEMENT` whenever the request is well formed, whatever happened, so they cannot be used to probe for groups, identities or tokens.
-- Rate limits: `invitationsPerInviterPerHour` (50), `invitationsPerGroupPerDay` (200), `acceptanceAttemptsPerHour` (20).
-- An invitation may carry `membershipStartsAt` and `membershipEndsAt` for scheduled joiners and leavers.
+- Acceptance and declining answer `INVITATION_ACKNOWLEDGEMENT` whenever the request is well formed and within the rate limit, whatever happened, so they cannot be used to probe for groups, identities or tokens. Creating an invitation returns the token to an authorised inviter (`identity.invitations:manage`), once; an unknown group and a refused inviter are both `forbidden`.
+- **No self-admission.** The inviter cannot accept their own unbound invitation, and nobody confirms their own acceptance.
+- Rate limits: `invitationsPerInviterPerHour` (50), `invitationsPerGroupPerDay` (200), `acceptanceAttemptsPerHour` (20). Every acceptance or decline counts as an attempt, whether or not the token is real.
+- An invitation may carry `membershipStartsAt` and `membershipEndsAt` for scheduled joiners and leavers. A guest's end defaults to the group's guest term from joining, and may not exceed it.
+- Whether the membership can be created is checked when it is created, at acceptance or confirmation: the group and tenant are active, guests are still allowed, the person is active and not already a member. If not, nothing is created.
+- **Home tenant.** Authentication may pass the token to `reserve` (`invitationToken`) when someone signs up through an invitation. Identity resolves the inviting tenant on the server from an open, unbound invitation, and falls back to the default otherwise, revealing nothing. Reserving does not use the invitation up.
+
+### 7.1 Join requests
+
+Where a group's `joining.open` is on, anyone already in its tenant (their home tenant, or a membership in effect there) joins at once as a `member`. Otherwise, where `joining.requests` is on, they record a request (`joinRequestSchema`): one open request per person and group, expiring after `approvalExpiryDays` (7). An administrator with `identity.join-requests:decide` approves, which creates the membership, or refuses; nobody decides their own request (`refuseJoinDecision`). The person may withdraw. A group in another tenant, or an unknown group, is `forbidden`; one that takes neither requests nor open joining is a `conflict`. Events: `join-request.created`, `join-request.decided` (`approved`, `refused`, `withdrawn`, `expired`).
 
 ## 8. Governance approvals
 
@@ -229,7 +236,7 @@ Removing or suspending an ordinary member is `medium`; doing so to an owner is `
 
 Two-step, because Authentication's engine creates its user record at sign-up, before verification ([design decisions](design-decisions.md) §1):
 
-1. `reserve({ requestId, kind: 'person', homeTenantId?, correlationId })` issues a `pending` identity. It is idempotent by `requestId` and receives no personal data.
+1. `reserve({ requestId, kind: 'person', homeTenantId? | invitationToken?, correlationId })` issues a `pending` identity. It is idempotent by `requestId` and receives no personal data. With an invitation token, the inviting tenant becomes the home tenant (§7).
 2. `confirm({ identityId, correlationId })`, once the sign-in identifier is verified, creates the personal group and its membership, makes the identity `active` and writes `identity.provisioned`, in one transaction. Idempotent.
 3. `signInStatus(identityId)` is always a `strong` read. It answers `allowed` (active), `resume-only` (paused), `cancel-closure-only` (closure-pending), `verification-only` (pending) or `refused`, and `passkeyOnly` for break-glass identities.
 
@@ -282,6 +289,7 @@ Written to Identity's transactional outbox in the same transaction as the change
 | `membership.added`, `.paused`, `.resumed`, `.suspended`, `.reinstated`, `.dates-changed`, `.ended` | membership, identity, group (and kind, owner, dates, end reason, reason code) | Authorisation (caches; default or guest role), Profile, domain capabilities |
 | `group.created`, `.renamed`, `.reparented`, `.owners-changed`, `.settings-changed`, `.orphaned`, `.archived` | group (and lineage, owners, changed settings) | Authorisation; Profile (`settings-changed` for the departure policy) |
 | `invitation.accepted`, `invitation.refused` | invitation, group, inviter, accepting identity, whether it awaits confirmation | Notification capabilities (tell the inviter and, when confirmation is needed, the group's administrators) |
+| `join-request.created`, `join-request.decided` | request, group, identity, outcome | Notification capabilities (tell the group's administrators, then the person) |
 | `tenant.created`, `tenant.closing` | tenant (and jurisdiction, region) | All members |
 | `approval.requested`, `approval.decided` | change, type, group, risk, route, outcome | Notification capabilities |
 | `break-glass.used`, `break-glass.review-closed` | review, break-glass identity, action, target, reason code | Host alerting (every operator and affected owner), audit |
@@ -345,13 +353,14 @@ The host calls these on the server; none is an HTTP route. Each uses the supplie
 | `getIdentityDisclosureContext()` | The disclosure-context port (§10.3), for the host's adapter to Profile | `validation-failed`, `unavailable` |
 | `getIdentityGovernance()` | Changes that need no second approver: `createGroup` (child group, `identity.groups:create`; the creator becomes founding owner), `renameGroup` (`identity.groups:rename`), `pauseMembership`, `resumeMembership` and `leaveGroup` (the member's own), and `actOnMember` (`remove` or `suspend` a member who is not an owner, with a reason code). Each takes the authenticated `subject` and a `correlationId` | `validation-failed` (malformed input, unsafe name), `forbidden` (unknown target, or refused by Authorisation), `insufficient-assurance`, `conflict` (last owner, personal group, confusable sibling name, depth, owner needing approval), `unavailable` |
 | `getIdentityApprovals()` | Governance changes that need approval (§8): `request({ subject, request, correlationId })`, `decide({ subject, changeId, changeDigest, decision, correlationId })`, `cancel({ subject, changeId, correlationId })` (the requester only) and `getPendingChange({ subject, changeId })`. Needs the access-decision and approval-policy ports | `validation-failed`, `forbidden`, `insufficient-assurance`, `conflict` (a rule, `self-grant`, not pending, a different digest, already decided), `unavailable` (including a permission missing from the host's catalogue) |
-| `runIdentityMaintenance()` | Closes `pending` identities past their confirmation window (`identity.provisioning-expired`), records memberships past their end date as `ended` (`expired`, `membership.ended`), expires changes nobody approved in time, and applies changes whose published delay has ended. Returns the counts | `unavailable` |
+| `getIdentityJoining()` | Joining a group (§7, §7.1): `invite` (returns the token once), `accept` and `decline` (the token's holder; always `INVITATION_ACKNOWLEDGEMENT`), `revoke`, `decideAcceptance` (`confirm` or `refuse` who accepted), `listInvitations`; `requestToJoin` (`joined` or `requested`), `withdrawJoinRequest`, `decideJoinRequest` (`approve` or `refuse`), `listJoinRequests` | `validation-failed`, `forbidden`, `insufficient-assurance`, `conflict` (guests not allowed, already a member, own acceptance or request, not pending, joining closed), `rate-limited`, `unavailable` |
+| `runIdentityMaintenance()` | Closes `pending` identities past their confirmation window (`identity.provisioning-expired`), records memberships past their end date as `ended` (`expired`, `membership.ended`), expires changes nobody approved in time, applies changes whose published delay has ended, and expires invitations, acceptances unconfirmed after `approvalExpiryDays` and join requests. Returns the counts | `unavailable` |
 | `provisionIdentityTenant({ pool, schema?, jurisdiction, dataRegion, externalId?, correlationId })` | The platform operator's tenant provisioning, with the **migration** pool; the runtime role cannot create tenants. The jurisdiction and region must be registered in the policy. Writes `tenant.created` | `validation-failed`, `unavailable` |
 | `bootstrapIdentityRootGroup({ pool, schema?, tenantId, name, firstOwnerId, correlationId })` | The operator's bootstrap of a tenant's first root group and founding owner (an active person), with the migration pool. Refused once the tenant has a root group: later ones are `group.create-root` changes. Writes `group.created` and `membership.added` with a null actor | `validation-failed`, `conflict`, `unavailable` |
 
 `IdentityError` carries the contract code; its message is for the server log only.
 
-Invitations, join requests, the identity lifecycle (pause, resume, closure), orphaned-group recovery, the recovery hold and break-glass actions follow in phases 3b and 3c.
+The identity lifecycle (pause, resume, closure), orphaned-group recovery, the recovery hold and break-glass actions follow in phase 3c.
 
 ## 17. Versioning
 
@@ -364,3 +373,5 @@ Changes before 1.0:
 | 3a | `pendingChangeSchema` gains `target`, `createdId` and `decidedAt`, and its target must match its type | For anyone constructing pending changes; readers gain fields |
 | 3a | `IdentityPolicy` gains `platformGroupId` (default null) | No |
 | 3a | `provisionIdentityTenant` takes the migration `pool`; the runtime role can no longer create tenants | Yes, for hosts that called it |
+| 3b | `provisioningReserveInputSchema` gains `invitationToken`; `joinRequestSchema`, `join-request.*` events and the `join-request` aggregate are added | No |
+| 3b | `INVITATION_ACKNOWLEDGEMENT` answers acceptance and declining only; creating an invitation returns its token | Clarification |

@@ -20,7 +20,8 @@ import { MEMBERSHIP_KINDS } from './membership'
  *   may accept.
  * - Responses never reveal whether a group, identity or invitation exists, or
  *   whether an address has an account (the address never reaches Identity).
- * - Creation and acceptance are rate-limited (policy `invitationRateLimits`).
+ * - Creation and acceptance are rate-limited (policy `invitationsPerInviterPerHour`,
+ *   `invitationsPerGroupPerDay`, `acceptanceAttemptsPerHour`).
  */
 
 /** Bytes of randomness in a token: 256 bits. */
@@ -108,8 +109,10 @@ export function refuseConfirmation(invitation: Pick<InvitationRecord, 'state' | 
 }
 
 /**
- * The one answer to "create an invitation" and "accept an invitation"
- * whenever the request is well-formed, whatever happened, so neither can be
- * used to probe for groups, identities or tokens.
+ * The one answer to accepting or declining an invitation whenever the
+ * request is well formed and within the rate limit, whatever happened, so
+ * neither can be used to probe for groups, identities or tokens. Creating an
+ * invitation returns the token to an authorised inviter, once; to anyone
+ * else it is `forbidden`.
  */
 export const INVITATION_ACKNOWLEDGEMENT = Object.freeze({ status: 'accepted' } as const)

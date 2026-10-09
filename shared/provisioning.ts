@@ -1,6 +1,7 @@
 import { z } from 'zod'
 import { correlationIdSchema, identifierSchema, instantSchema } from './identifiers'
 import { IDENTITY_KINDS, IDENTITY_STATES } from './identity'
+import { invitationTokenSchema } from './invitation'
 
 /**
  * The provisioning port Identity provides to Authentication (docs/contracts.md
@@ -31,8 +32,14 @@ export const provisioningReserveInputSchema = z.strictObject({
    * server; otherwise omitted for the policy's default. Never taken from the client.
    */
   homeTenantId: identifierSchema.optional(),
+  /**
+   * For a sign-up through an invitation: the token, from which Identity
+   * resolves the inviting tenant on the server. Never stored or logged; the
+   * invitation is not accepted by this call. Not with `homeTenantId`.
+   */
+  invitationToken: invitationTokenSchema.optional(),
   correlationId: correlationIdSchema,
-})
+}).refine(input => !(input.homeTenantId && input.invitationToken), { message: 'Supply a home tenant or an invitation token, not both' })
 
 export const provisioningReservationSchema = z.strictObject({
   identityId: identifierSchema,
