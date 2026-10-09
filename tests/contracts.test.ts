@@ -77,6 +77,15 @@ describe('Identity public contract', () => {
     }
   })
 
+  it('declares an effect for every permission: view for reading only, change otherwise (Authorisation contract 3)', () => {
+    const views = contracts.IDENTITY_PERMISSIONS.filter(permission => permission.effect === 'view').map(permission => permission.name)
+    expect(views).toEqual(['identity.groups:view', 'identity.memberships:view', 'identity.tenants:view'])
+    for (const permission of contracts.IDENTITY_PERMISSIONS) {
+      expect(contracts.IDENTITY_PERMISSION_EFFECTS).toContain(permission.effect)
+      if (permission.effect === 'view') expect(permission.risk).toBe('low')
+    }
+  })
+
   it('uses the risk levels the iam-integration processes set', () => {
     const risk = (name: contracts.IdentityPermissionName) => contracts.identityPermissionRisk(name)
     expect(risk('identity.root-groups:create')).toBe('high')

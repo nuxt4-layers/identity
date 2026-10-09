@@ -127,8 +127,8 @@ export type { JoinDecisionRefusal, JoinRequestRecord, JoinRequestState } from '.
 export { JOIN_DECISION_REFUSALS, JOIN_REQUEST_STATES, joinRequestSchema, refuseJoinDecision } from '../shared/join-request'
 
 // Permissions
-export type { IdentityPermissionDefinition, IdentityPermissionName, IdentityRiskLevel } from '../shared/permissions'
-export { IDENTITY_PERMISSIONS, IDENTITY_RISK_LEVELS, identityPermissionRisk } from '../shared/permissions'
+export type { IdentityPermissionDefinition, IdentityPermissionEffect, IdentityPermissionName, IdentityRiskLevel } from '../shared/permissions'
+export { IDENTITY_PERMISSION_EFFECTS, IDENTITY_PERMISSIONS, IDENTITY_RISK_LEVELS, identityPermissionRisk } from '../shared/permissions'
 
 // Governance approvals
 export type {

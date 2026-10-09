@@ -232,7 +232,7 @@ Members of the group may see its recovery to object to it. A break-glass identit
 
 ## 9. Permissions
 
-Identity's permissions follow Authorisation's grammar (`<resource>:<action>`). The host adds `IDENTITY_PERMISSIONS` to Authorisation's catalogue.
+Identity's permissions follow Authorisation's grammar (`<resource>:<action>`). The host adds `IDENTITY_PERMISSIONS` to Authorisation's catalogue. Each declares its `effect` for Authorisation contract 3: the three `:view` permissions are `view`, every other one `change`. A paused member therefore still sees the group, its members and its tenant, and changes nothing.
 
 | Permission | Risk |
 |---|---|
