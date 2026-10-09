@@ -44,7 +44,7 @@ Group relationships do not confer access. Identity reports structure and state; 
 - [ADR-0006 — Polyglot Persistence and Data-Store Security](https://github.com/nuxt4-layers/platform-architecture/blob/93f3d6fb144b72d61cfb172b6a50eb6c5af9f489/docs/decisions/ADR-0006-polyglot-persistence-and-data-store-security.md) and the [Data Store Security Standard v0.1](https://github.com/nuxt4-layers/platform-architecture/blob/93f3d6fb144b72d61cfb172b6a50eb6c5af9f489/docs/standards/data-store-security-v01.md)
 - [ADR-0007 — Break-Glass Emergency Access](https://github.com/nuxt4-layers/platform-architecture/blob/93f3d6fb144b72d61cfb172b6a50eb6c5af9f489/docs/decisions/ADR-0007-break-glass-emergency-access.md)
 
-The suite architecture, state models and cross-capability processes are specified in [`iam-integration`](https://github.com/nuxt4-layers/iam-integration/blob/19df31458bab5a5190ab6590e58ef01ceabf9533/docs/architecture.md).
+The suite architecture, state models and cross-capability processes are specified in [`iam-integration`](https://github.com/nuxt4-layers/iam-integration/blob/d46b16580a711b840edb1eef5db51b2fe3d0421f/docs/architecture.md).
 
 ## Documentation
 
