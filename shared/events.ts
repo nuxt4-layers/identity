@@ -156,7 +156,6 @@ export const PROFILE_CONSUMED_EVENT_TYPES = Object.freeze([
   'group.settings-changed',
   'group.deleted',
   'group.disposal-due',
-  'identity.rehomed',
 ] as const satisfies readonly IdentityEventType[])
 
 /** Events that must reach Authentication: it revokes sessions or discards a never-confirmed account. */
