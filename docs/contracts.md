@@ -392,7 +392,7 @@ The layer mounts these endpoints under `/api/identity` (`IDENTITY_API_PREFIX`). 
 
 | Method and path | Does | Server function |
 |---|---|---|
-| `GET /me` | The signed-in identity's own view (`selfViewSchema`) | `getIdentityQueries().self` |
+| `GET /me` | The signed-in identity's own view (`selfViewSchema`): its actor context, the names of its groups and of the standard groups it has left (`formerGroupNames`), and the groups it alone owns | `getIdentityQueries().self` |
 | `POST /me/pause`, `POST /me/resume` | Pauses (after reauthentication) or resumes the identity | `getIdentityLifecycle()` |
 | `POST /me/closure`, `DELETE /me/closure` | Requests (`{ leaveGroupsOrphaned? }`) or cancels closure, after reauthentication | `getIdentityLifecycle()` |
 | `POST /groups` | Creates a child group (`{ parentGroupId, name }`); 201 | `getIdentityGovernance().createGroup` |
@@ -481,3 +481,4 @@ Changes before 1.0:
 | 4 | `IdentitySubjectResolver` port; administration schemas (`selfViewSchema`, `groupViewSchema`, `groupMembersPageSchema`, `identityExportSchema`); `IdentityErrorBody.reason` | No |
 | 5 | `selfViewSchema` gains `groupNames` (the person's own groups); presentation entry points `./presentation` and `./tailwind.css` | No |
 | Safety periods | `group.change-safety-periods`; `safetyPeriodsSchema`, `effectiveSafetyPeriodsSchema` and helpers; `groupViewSchema` gains `safetyPeriods`; `group.settings-changed` may name `safetyPeriods`; migration `0007_safety_periods` | `groupViewSchema` readers gain a field, and anyone constructing it must add it; consumers of `group.settings-changed` must accept the new setting name |
+| 5c | `selfViewSchema` gains `formerGroupNames` (the person's groups left, for Profile's page to choose anonymity in one of them); migration `0008_former_group_names`; `DELIBERATE_PAIRINGS` moves to `presentation/pairings.ts` and is no longer auto-imported (still exported from `./presentation`) | Anyone constructing `selfViewSchema` must add the field; hosts that used the auto-imported `DELIBERATE_PAIRINGS` import it from `./presentation` |

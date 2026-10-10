@@ -103,7 +103,11 @@ export function createQueries({ db, access, policy, clock = systemClock }: Queri
             `select group_id::text as "groupId", name from ${db.schema}."group" where group_id = any ($1::uuid[]) and kind = 'standard' order by name, group_id`,
             [groupIds],
           ), { tenantIds })).rows
-      return selfViewSchema.parse({ actor, groupNames: names, lastOwnerOf: rows[0]?.groups ?? [] })
+      const former = await db.transaction(client => client.query<{ groups: unknown }>(
+        `select ${db.schema}.former_group_names($1) as groups`,
+        [subject.principalId],
+      ), { at: clock.now() })
+      return selfViewSchema.parse({ actor, groupNames: names, formerGroupNames: former.rows[0]?.groups ?? [], lastOwnerOf: rows[0]?.groups ?? [] })
     },
 
     /** A group, its settings, lineage and safety periods (`identity.groups:view`). */

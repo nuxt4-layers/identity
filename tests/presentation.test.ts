@@ -3,7 +3,8 @@ import { createRequire } from 'node:module'
 import { dirname, join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { IDENTITY_MESSAGES_EN_GB } from '../presentation/messages'
-import { DELIBERATE_PAIRINGS, identityClasses } from '../presentation/utils/identity-classes'
+import { DELIBERATE_PAIRINGS } from '../presentation/pairings'
+import { identityClasses } from '../presentation/utils/identity-classes'
 import { CHANGE_TYPES_FOR_TEST, ERROR_CODES_FOR_TEST, STATES_FOR_TEST } from './support/presentation-vocabulary'
 
 /**
