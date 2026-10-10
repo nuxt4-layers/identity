@@ -18,12 +18,26 @@ import { createQueries, createScimStructure, exportIdentity } from '../internal/
 import type { Lifecycle } from '../internal/lifecycle'
 import { createLifecycle, recordCredentialRecovery } from '../internal/lifecycle'
 import { createProvisioning } from '../internal/provisioning'
-import { useIdentityAccessDecision, useIdentityApprovalPolicy, useIdentityDatabase, useIdentityEventPublisher, useIdentityPolicy } from './identity-composition'
+import { useIdentityAccessDecision, useIdentityApprovalPolicy, useIdentityClock, useIdentityDatabase, useIdentityEventPublisher, useIdentityPolicy } from './identity-composition'
 
 /**
  * Identity's server functions. Each uses the ports the host supplied and
- * fails closed (`IdentityCompositionError`) when one is missing.
+ * fails closed (`IdentityCompositionError`) when one is missing. Each takes
+ * its time from the host's clock (`provideIdentityClock`), or the system
+ * clock.
  */
+
+/** The runtime database, its transactions timed by the clock. */
+function runtime() {
+  const clock = useIdentityClock()
+  return { db: database(useIdentityDatabase(), clock), clock }
+}
+
+/** The operator's database, with the migration pool, timed by the clock. */
+function operator(pool: PostgresPoolLike, schema: string | undefined) {
+  const clock = useIdentityClock()
+  return { db: database({ dialect: 'postgres', pool, schema: schema ?? 'identity' }, clock), clock }
+}
 
 /**
  * Applies Identity's migrations. Call it with the **migration** pool (the
@@ -36,17 +50,20 @@ export function migrateIdentityDatabase(input: { pool: PostgresPoolLike, runtime
 
 /** The provisioning port, for the host's adapter to Authentication. */
 export function getIdentityProvisioning(): IdentityProvisioning {
-  return createProvisioning(database(useIdentityDatabase()), useIdentityPolicy())
+  const { db, clock } = runtime()
+  return createProvisioning(db, useIdentityPolicy(), clock)
 }
 
 /** The directory port, for the host's adapter to Authorisation. */
 export function getIdentityDirectory(): IdentityDirectory {
-  return createDirectory(database(useIdentityDatabase()))
+  const { db, clock } = runtime()
+  return createDirectory(db, clock)
 }
 
 /** The disclosure-context port, for the host's adapter to Profile. */
 export function getIdentityDisclosureContext(): IdentityDisclosureContextPort {
-  return createDisclosure(database(useIdentityDatabase()))
+  const { db, clock } = runtime()
+  return createDisclosure(db, clock)
 }
 
 /**
@@ -56,7 +73,7 @@ export function getIdentityDisclosureContext(): IdentityDisclosureContextPort {
  * the access-decision port and announced through the outbox.
  */
 export function getIdentityGovernance(): Governance {
-  return createGovernance({ db: database(useIdentityDatabase()), access: useIdentityAccessDecision(), policy: useIdentityPolicy() })
+  return createGovernance({ ...runtime(), access: useIdentityAccessDecision(), policy: useIdentityPolicy() })
 }
 
 /**
@@ -67,7 +84,7 @@ export function getIdentityGovernance(): Governance {
  */
 export function getIdentityApprovals(): Approvals {
   return createApprovals({
-    db: database(useIdentityDatabase()),
+    ...runtime(),
     access: useIdentityAccessDecision(),
     approvalPolicy: useIdentityApprovalPolicy(),
     policy: useIdentityPolicy(),
@@ -80,7 +97,7 @@ export function getIdentityApprovals(): Approvals {
  * `withdrawJoinRequest`, `decideJoinRequest` and `listJoinRequests`.
  */
 export function getIdentityJoining(): Joining {
-  return createJoining({ db: database(useIdentityDatabase()), access: useIdentityAccessDecision(), policy: useIdentityPolicy() })
+  return createJoining({ ...runtime(), access: useIdentityAccessDecision(), policy: useIdentityPolicy() })
 }
 
 /**
@@ -89,7 +106,7 @@ export function getIdentityJoining(): Joining {
  * Reserved to the person; no permission is asked.
  */
 export function getIdentityLifecycle(): Lifecycle {
-  return createLifecycle({ db: database(useIdentityDatabase()), policy: useIdentityPolicy() })
+  return createLifecycle({ ...runtime(), policy: useIdentityPolicy() })
 }
 
 /**
@@ -98,12 +115,12 @@ export function getIdentityLifecycle(): Lifecycle {
  * `critical` changes. Call it from the host's event relay.
  */
 export function recordIdentityCredentialRecovery(input: { identityId: string, recoveredAt: string, correlationId: string }): Promise<{ recorded: boolean }> {
-  return recordCredentialRecovery(database(useIdentityDatabase()), input)
+  return recordCredentialRecovery(runtime().db, input)
 }
 
 /** Break-glass actions and their reviews (ADR-0007; docs/contracts.md §13): `act` and `closeReview`. */
 export function getIdentityBreakGlass(): BreakGlass {
-  return createBreakGlass({ db: database(useIdentityDatabase()), access: useIdentityAccessDecision(), policy: useIdentityPolicy() })
+  return createBreakGlass({ ...runtime(), access: useIdentityAccessDecision(), policy: useIdentityPolicy() })
 }
 
 /**
@@ -112,7 +129,7 @@ export function getIdentityBreakGlass(): BreakGlass {
  * through the access-decision port.
  */
 export function getIdentityQueries(): Queries {
-  return createQueries({ db: database(useIdentityDatabase()), access: useIdentityAccessDecision(), policy: useIdentityPolicy() })
+  return createQueries({ ...runtime(), access: useIdentityAccessDecision(), policy: useIdentityPolicy() })
 }
 
 /**
@@ -121,17 +138,20 @@ export function getIdentityQueries(): Queries {
  * verified request in iam-integration's data-subject request process.
  */
 export function exportIdentityData(input: { identityId: string, correlationId: string }) {
-  return exportIdentity(database(useIdentityDatabase()), input)
+  const { db, clock } = runtime()
+  return exportIdentity(db, input, clock)
 }
 
 /** The structural part of SCIM users and groups, for the SCIM endpoint the host composes. Server-only. */
 export function getIdentityScimStructure() {
-  return createScimStructure(database(useIdentityDatabase()))
+  const { db, clock } = runtime()
+  return createScimStructure(db, clock)
 }
 
 /** Publishes pending outbox events through the host's publisher. Schedule it frequently. */
 export function relayIdentityOutbox(input: { limit?: number } = {}): Promise<RelayResult> {
-  return relayOutbox(database(useIdentityDatabase()), useIdentityEventPublisher(), input.limit ?? 100)
+  const { db, clock } = runtime()
+  return relayOutbox(db, useIdentityEventPublisher(), input.limit ?? 100, clock)
 }
 
 /**
@@ -140,7 +160,8 @@ export function relayIdentityOutbox(input: { limit?: number } = {}): Promise<Rel
  * Schedule it every few minutes.
  */
 export function runIdentityMaintenance(): Promise<MaintenanceResult> {
-  return runMaintenance(database(useIdentityDatabase()), undefined, undefined, useIdentityPolicy().approvalExpiryDays)
+  const { db, clock } = runtime()
+  return runMaintenance(db, clock, undefined, useIdentityPolicy().approvalExpiryDays)
 }
 
 interface OperatorConnection {
@@ -155,7 +176,8 @@ interface OperatorConnection {
  */
 export function provisionIdentityTenant(input: OperatorConnection & { jurisdiction: string, dataRegion: string, externalId?: string | null, correlationId: string }): Promise<{ tenantId: string }> {
   const { pool, schema, ...tenant } = input
-  return provisionTenant(database({ dialect: 'postgres', pool, schema: schema ?? 'identity' }), useIdentityPolicy(), tenant)
+  const { db, clock } = operator(pool, schema)
+  return provisionTenant(db, useIdentityPolicy(), tenant, clock)
 }
 
 /**
@@ -165,7 +187,8 @@ export function provisionIdentityTenant(input: OperatorConnection & { jurisdicti
  */
 export function bootstrapIdentityRootGroup(input: OperatorConnection & { tenantId: string, name: string, firstOwnerId: string, correlationId: string }): Promise<{ groupId: string }> {
   const { pool, schema, ...group } = input
-  return bootstrapRootGroup(database({ dialect: 'postgres', pool, schema: schema ?? 'identity' }), group)
+  const { db, clock } = operator(pool, schema)
+  return bootstrapRootGroup(db, group, clock)
 }
 
 /**
@@ -174,5 +197,6 @@ export function bootstrapIdentityRootGroup(input: OperatorConnection & { tenantI
  */
 export function provisionIdentityBreakGlass(input: OperatorConnection & { homeTenantId: string, correlationId: string }): Promise<{ identityId: string }> {
   const { pool, schema, ...identity } = input
-  return provisionBreakGlass(database({ dialect: 'postgres', pool, schema: schema ?? 'identity' }), identity)
+  const { db, clock } = operator(pool, schema)
+  return provisionBreakGlass(db, identity, clock)
 }

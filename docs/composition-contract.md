@@ -49,6 +49,7 @@ The host application:
 - supplies `provideIdentityApprovalPolicy` (required), adapting Authorisation's catalogue risk levels and the principals who hold a permission in a group. Every read is `strong`;
 - supplies `provideIdentityEventPublisher` (required), the publishing end of its outbox relay;
 - supplies `provideIdentitySubjectResolver` for the `/api/identity/*` endpoints, adapting Authentication's `getAuthenticatedPrincipal(event)`; without it every endpoint answers `unavailable`;
+- optionally supplies `provideIdentityClock`, the suite's one clock (iam-integration's architecture §7), the same one it gives every other member; a clock that can be moved only in tests;
 - sets `NUXT_IDENTITY_BASE_URL` to its public origin; without it every state-changing endpoint is refused;
 - for the default pages: imports Theme Manager's `presentation.css` and then `@nuxt4-layers/identity/tailwind.css` into its Tailwind stylesheet, sets `identity.routes.signIn` to its sign-in page, and overrides `IdentityPersonName` with a component that asks Profile for names; or turns the pages off (`identity: { pages: { enabled: false } }`);
 - builds its own invitation endpoint, which calls `getIdentityJoining().invite` and hands the token and the address to its delivery, so that the address never reaches Identity;
@@ -122,6 +123,7 @@ Identity follows ADR-0002 and the [Data Store Security Standard v0.1](https://gi
 | Event publisher failure | The event stays in the outbox and is retried; the committed change stands. Later events wait for the next run, so each aggregate's order is kept |
 | Outbox event that does not match the contract | Never published; logged by sequence number (no payload) for an operator to inspect |
 | Runtime role that can bypass row-level security, or is the migration role | `migrateIdentityDatabase` refuses to run |
+| Clock that throws or answers no valid date | `unavailable` (503); the operation is refused, never timed by another clock |
 | No subject resolver, or it fails | Endpoints answer `unavailable` (503); none treats the caller as anyone |
 | No base URL configured, or a foreign origin | State-changing endpoints answer `forbidden` (403) |
 

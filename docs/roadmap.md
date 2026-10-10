@@ -16,7 +16,7 @@ Each phase is delivered as its own pull request with tests, and keeps `pnpm chec
 | 5a. Safety periods | Configurable published delays, approval expiry, recovery delay, recovery hold and closure grace period: platform, root group and group levels as `critical` governance changes, a less safe value waiting out the old one, checked in the database; shown and requested on the group page ([contract](contracts.md) §21) | Complete |
 | 5b. Permission effects | Each permission declares its `effect` (`view` or `change`) for Authorisation contract 3, so a paused member can still see a group, its members and its tenant, and changes nothing ([contract](contracts.md) §9) | Complete |
 | 5c. For Profile phase 4 | The names of the groups a person has left on their own view (`formerGroupNames`), for Profile's page to choose anonymity in one of them through the host; `DELIBERATE_PAIRINGS` no longer auto-imported, so it no longer collides with Authentication's and Profile's in a host | Complete |
-| 6. Host integration | Composition into `platform-test-harness` with Authentication and Authorisation through iam-integration's reference adapters; end-to-end tests of the iam-integration processes | In progress |
+| 6. Host integration | Composition into `platform-test-harness` with Authentication and Authorisation through iam-integration's reference adapters; end-to-end tests of the iam-integration processes; the host's clock (`provideIdentityClock`), which every service, maintenance run and database transaction takes its time from, so that hosts can supply the suite's clock and tests can let safety periods pass | In progress |
 
 ## Improvement register items in phase 1
 

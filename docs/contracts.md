@@ -286,6 +286,7 @@ and, when a group context applies, the group's **departure data policy**. Normal
 | `IdentityEventPublisher` | Host's outbox relay | Publishes each outbox event at least once | Yes |
 | `IdentityPolicy` | Host | Overrides within bounds (§15) | No |
 | `IdentitySubjectResolver` | Authentication, through the host | Who is signed in, for the HTTP endpoints (§19): the host adapts `getAuthenticatedPrincipal(event)` | For the endpoints; without it every endpoint answers `unavailable` |
+| `IdentityClock` | Host (the suite's one clock) | The current time (`now()`) for everything Identity keeps or judges: safety periods, delays, expiries, the closure grace period, the recovery hold, recent authentication, and every database transaction's time (`identity.at`), which the database's own checks and triggers read | No; without it, the system clock. A clock that throws or answers no valid date fails the operation as `unavailable` |
 
 `IdentityAccessDecision` is an addition to iam-integration's architecture §3, which listed only the approval-policy port; see [design decisions](design-decisions.md) §8.
 

@@ -218,6 +218,7 @@ export type {
   AccessDecision,
   IdentityAccessDecision,
   IdentityApprovalPolicy,
+  IdentityClock,
   IdentityDatabase,
   IdentityEventPublisher,
   IdentitySubject,

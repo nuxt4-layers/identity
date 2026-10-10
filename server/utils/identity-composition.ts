@@ -1,13 +1,14 @@
 import type {
   IdentityAccessDecision,
   IdentityApprovalPolicy,
+  IdentityClock,
   IdentityDatabase,
   IdentityEventPublisher,
   IdentityPolicy,
   IdentityPolicyInput,
   IdentitySubjectResolver,
 } from '../../contracts'
-import { IdentityCompositionError, resolveIdentityPolicy } from '../../contracts'
+import { IdentityCompositionError, IdentityError, resolveIdentityPolicy } from '../../contracts'
 
 /**
  * Composition registry. The host application calls the `provide*` functions
@@ -24,6 +25,7 @@ let approvalPolicy: IdentityApprovalPolicy | null = null
 let eventPublisher: IdentityEventPublisher | null = null
 let policy: IdentityPolicy | null = null
 let subjectResolver: IdentitySubjectResolver | null = null
+let clock: IdentityClock | null = null
 
 export function provideIdentityDatabase(next: IdentityDatabase): void {
   if (next?.dialect !== 'postgres' || typeof next.pool?.query !== 'function') {
@@ -67,6 +69,41 @@ export function provideIdentitySubjectResolver(next: IdentitySubjectResolver): v
     throw new TypeError('provideIdentitySubjectResolver expects an object with a resolve(event) function.')
   }
   subjectResolver = next
+}
+
+/**
+ * Supplies the clock every service, maintenance run and database transaction
+ * takes its time from (iam-integration's architecture §7). Optional: without
+ * it, the system clock. Compose a movable clock only in tests.
+ */
+export function provideIdentityClock(next: IdentityClock): void {
+  if (typeof next?.now !== 'function') {
+    throw new TypeError('provideIdentityClock expects an object with a now() function.')
+  }
+  clock = next
+}
+
+const systemClock: IdentityClock = { now: () => new Date() }
+
+/**
+ * The clock, checked: one that throws or answers anything but a valid date
+ * fails the operation as `unavailable`, never falling back to another time.
+ */
+export function useIdentityClock(): IdentityClock {
+  const source = clock ?? systemClock
+  return {
+    now() {
+      let at: unknown
+      try {
+        at = source.now()
+      }
+      catch {
+        throw new IdentityError('unavailable', 'identity clock failed')
+      }
+      if (!(at instanceof Date) || !Number.isFinite(at.getTime())) throw new IdentityError('unavailable', 'identity clock answered no valid time')
+      return new Date(at.getTime())
+    },
+  }
 }
 
 /** Validates and stores the host's policy. Invalid policy, or a loosening without a risk treatment, throws at startup. */
@@ -113,4 +150,5 @@ export function clearIdentityComposition(): void {
   eventPublisher = null
   policy = null
   subjectResolver = null
+  clock = null
 }
