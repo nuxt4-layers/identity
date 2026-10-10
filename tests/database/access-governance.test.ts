@@ -247,6 +247,32 @@ describe.skipIf(!hasDatabase)('access governance on PostgreSQL', () => {
     expect((await describeGroup(groupId, rootOwner))?.requester.controls).toEqual([])
   })
 
+  it('never lets an identity the requester controls approve for them, even as an owner above the group', async () => {
+    const { groupId, owner } = await childGroup()
+    const created = await approvedChange(owner, 'identity.service-identities:create', groupId, {
+      type: 'service-identity.create',
+      target: { groupId },
+      justification: { reasonCode: 'integration', reference: null },
+    })
+    const controlled = created.createdId!
+    expect((await describeGroup(groupId, owner))?.requester.controls).toEqual([controlled])
+    // The service identity is made an owner of the parent group, the fallback approver's place.
+    await join(controlled, root, { owner: true })
+    const member = await person()
+    await join(member, groupId)
+    allow(owner, 'identity.group-owners:manage', groupId)
+    const change = await getIdentityApprovals().request({
+      subject: subject(owner),
+      request: { type: 'group.add-owner', target: { membershipId: await membershipOf(member, groupId) }, justification },
+      correlationId: CORRELATION_ID,
+    })
+    expect(change.route).toBe('parent-owner')
+    // Approvers are active people only: a service identity never approves, so no controlled identity can.
+    await expect(getIdentityApprovals().decide({ subject: subject(controlled), changeId: change.changeId, changeDigest: change.changeDigest, decision: 'approve', correlationId: CORRELATION_ID }))
+      .rejects.toEqual(expect.objectContaining({ code: 'forbidden' }))
+    expect((await getIdentityApprovals().getPendingChange({ subject: subject(owner), changeId: change.changeId })).state).toBe('awaiting-approval')
+  })
+
   it('follows owners as they are added and removed, excluding the identities named', async () => {
     const governance = getIdentityAccessGovernance()
     const { groupId, owner } = await childGroup()

@@ -567,6 +567,8 @@ export function createApprovals({ db, access, approvalPolicy, policy, clock = sy
       await requireActivePerson(subject)
       const now = clock.now()
       const assurance = { level: subject.assurance.level, phishingResistant: subject.assurance.phishingResistant, authenticatedAt: subject.authenticatedAt }
+      // An identity the requester controls is a service identity they created; requireActivePerson and the
+      // database's record_decision refuse every approver who is not an active person, so none can decide here.
       const refusal = refuseApproval({ change, approverId: subject.principalId, qualifies: true, controlledByRequester: false, assurance, changeDigest: digest, now })
       if (refusal === 'insufficient-assurance') throw new IdentityError('insufficient-assurance')
       if (refusal) throw new IdentityError('conflict', refusal)

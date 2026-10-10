@@ -181,7 +181,7 @@ Identity owns pending **governance** changes; Authorisation owns pending role an
 **Rules:**
 
 1. **No self-grant at any risk level** (`refuseRequest` → `self-grant`). Outside their own personal group, nobody requests a change that confers ownership, a reinstatement, an appointment or new membership dates on themselves.
-2. **Approvers** (`refuseApproval`) are never the requester, never the beneficiary, never an identity the requester controls (such as a service identity they created), and must still qualify at decision time: Identity asks Authorisation with a `strong` read when the approval is given. Each approver decides once.
+2. **Approvers** (`refuseApproval`) are never the requester, never the beneficiary, never an identity the requester controls (the service identities created by `service-identity.create` changes they requested, as `getIdentityAccessGovernance` lists them: only active people approve, so the database refuses every one of them), and must still qualify at decision time: Identity asks Authorisation with a `strong` read when the approval is given. Each approver decides once.
 3. **Exact change.** An approval is bound to the change's digest; a change that differs needs a new approval.
 4. **Assurance.** Requesters and approvers meet `STEP_UP_REQUIREMENTS` for the risk: `high` needs aal2; `critical` needs phishing-resistant aal2 within the last 15 minutes.
 5. **Requirement.** `approvalRequirement` takes the group's setting, never below the floor (`low` and `medium`: 0 beyond a requester who is never the beneficiary; `high` and `critical`: 1). Raising it is `critical`.
