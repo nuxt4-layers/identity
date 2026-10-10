@@ -81,7 +81,7 @@ const SAFE_NAME_PATHS = ['group.name', 'groupView.group.name', 'pendingChange.ta
 describe('Identity holds no personal data', () => {
   it('covers every record, event and port answer', () => {
     expect(Object.keys(IDENTITY_DATA_SCHEMAS).sort()).toEqual([
-      'actorContext', 'breakGlassReview', 'disclosureContext', 'event', 'group', 'groupDescription', 'groupMembersPage', 'groupView', 'identity',
+      'actorContext', 'breakGlassReview', 'disclosureContext', 'event', 'governedGroup', 'group', 'groupDescription', 'groupMembersPage', 'groupView', 'identity',
       'identityExport', 'identityExternalId', 'invitation', 'joinRequest', 'membership', 'pendingChange', 'provisionedIdentity', 'provisioningReservation',
       'scimGroupStructure', 'scimUserStructure', 'selfView', 'signInStatus', 'tenant',
     ])

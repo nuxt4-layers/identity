@@ -1,5 +1,6 @@
-import type { IdentityDirectory, IdentityDisclosureContextPort, IdentityProvisioning, PostgresPoolLike } from '../../contracts'
+import type { IdentityAccessGovernance, IdentityDirectory, IdentityDisclosureContextPort, IdentityProvisioning, PostgresPoolLike } from '../../contracts'
 import { runIdentityMigrations } from '../database/migrations'
+import { createAccessGovernance } from '../internal/access-governance'
 import type { Approvals } from '../internal/approvals'
 import { createApprovals } from '../internal/approvals'
 import type { MaintenanceResult, RelayResult } from '../internal/background'
@@ -58,6 +59,21 @@ export function getIdentityProvisioning(): IdentityProvisioning {
 export function getIdentityDirectory(): IdentityDirectory {
   const { db, clock } = runtime()
   return createDirectory(db, clock)
+}
+
+/**
+ * The access-governance port, for the host's adapter to Authorisation
+ * (docs/contracts.md §10.4; iam-integration
+ * `docs/processes/access-administration.md`): `describeGroup` (a group's
+ * approval requirement, safety periods in force, parent, root and person,
+ * with the requester's recovery hold and the identities they control),
+ * `isOwner` and `countOwners`. Every read is `strong`, timed by the clock.
+ * Server-only, like the directory: it decides nothing and checks no
+ * permission, so never expose it over HTTP.
+ */
+export function getIdentityAccessGovernance(): IdentityAccessGovernance {
+  const { db, clock } = runtime()
+  return createAccessGovernance({ db, policy: useIdentityPolicy(), clock })
 }
 
 /** The disclosure-context port, for the host's adapter to Profile. */

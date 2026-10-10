@@ -96,6 +96,7 @@ describe.skipIf(!hasDatabase)('identity schema, roles and row-level security', (
     await expect(db.runtime.query(`select identity.enqueue_event('identity.paused', null, 'identity', $1, 1, null, $1, now(), '{}'::jsonb)`, [uuidv7()])).rejects.toThrow(/permission denied/)
     await expect(db.runtime.query(`select identity.lineage_of($1)`, [uuidv7()])).rejects.toThrow(/permission denied/)
     await expect(db.runtime.query(`select identity.describe_group($1) as g`, [uuidv7()])).resolves.toBeDefined()
+    await expect(db.runtime.query(`select identity.access_governance_facts($1, $2, 10) as g`, [uuidv7(), uuidv7()])).resolves.toMatchObject({ rows: [{ g: null }] })
   })
 
   it('never lets the runtime role create tenants, write pending changes or apply a change itself', async () => {
