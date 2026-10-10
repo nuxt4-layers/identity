@@ -2474,6 +2474,845 @@ revoke all on function {{schema}}.access_governance_facts(uuid, uuid, integer) f
 grant execute on function {{schema}}.access_governance_facts(uuid, uuid, integer) to {{runtime}};
 `,
   },
+  {
+    id: '0010_end_of_life',
+    sql: `
+-- End of life (docs/contracts.md §22; iam-integration's group deletion,
+-- tenant lifecycle and retention processes).
+--
+-- A deleted group confers nothing at once: no port describes it. Its
+-- information is disposed of in every member once no legal hold covers it;
+-- Identity disposes of its own part and keeps a tombstone (identifier,
+-- tenant, kind, parent, dates). Legal holds on groups and tenants, the
+-- disposal record and members' confirmations span tenants and are never
+-- granted: the runtime role reaches them only through the functions below.
+
+-- States ----------------------------------------------------------------------
+
+alter table {{schema}}."group" drop constraint group_state_check;
+alter table {{schema}}."group" add constraint group_state_check check (state in ('active', 'orphaned', 'archived', 'deleted'));
+alter table {{schema}}."group" drop constraint group_check;
+alter table {{schema}}."group" add constraint group_named_unless_personal check (state = 'deleted' or (kind = 'personal') = (name is null and settings is null));
+alter table {{schema}}."group" drop constraint group_check1;
+alter table {{schema}}."group" add constraint group_personal_shape check (kind = 'standard' or (parent_group_id is null and state in ('active', 'deleted')));
+alter table {{schema}}."group" add column archived_at timestamptz;
+alter table {{schema}}."group" add column deleted_at timestamptz;
+alter table {{schema}}."group" add constraint group_tombstone check (state <> 'deleted' or deleted_at is not null);
+-- Groups archived before this migration count as archived from now.
+update {{schema}}."group" set archived_at = now() where state = 'archived';
+
+alter table {{schema}}.membership drop constraint membership_end_reason_check;
+alter table {{schema}}.membership add constraint membership_end_reason_check
+  check (end_reason in ('left', 'removed', 'expired', 'identity-closed', 'group-archived', 'group-deleted'));
+
+alter table {{schema}}.tenant add column closes_at timestamptz;
+alter table {{schema}}.tenant add column closing_change_id uuid;
+alter table {{schema}}.tenant add column closed_at timestamptz;
+alter table {{schema}}.tenant add constraint tenant_closing_shape
+  check ((state = 'closing') = (closes_at is not null and closing_change_id is not null) and (state = 'closed') = (closed_at is not null));
+
+create function {{schema}}.stamp_archived() returns trigger language plpgsql as $$
+begin
+  if new.state = 'archived' and old.state is distinct from 'archived' then new.archived_at := {{schema}}.context_at(); end if;
+  return new;
+end $$;
+
+create trigger group_archived_at before update of state on {{schema}}."group" for each row execute function {{schema}}.stamp_archived();
+
+-- Nothing is created in a tenant that is not active, or in a deleted group,
+-- whoever writes; and nobody but the owner role changes a deleted group.
+create function {{schema}}.guard_live_tenant() returns trigger language plpgsql security definer set search_path = pg_catalog, pg_temp as $$
+begin
+  if not exists (select 1 from {{schema}}.tenant t where t.tenant_id = new.tenant_id and t.state = 'active') then
+    raise exception 'identity:tenant-unavailable';
+  end if;
+  -- Nested, so that each branch reads only the columns its table has.
+  if tg_table_name = 'group' then
+    if new.parent_group_id is not null and exists (select 1 from {{schema}}."group" g where g.group_id = new.parent_group_id and g.state = 'deleted') then
+      raise exception 'identity:unknown';
+    end if;
+  elsif exists (select 1 from {{schema}}."group" g where g.group_id = new.group_id and g.state = 'deleted') then
+    raise exception 'identity:unknown';
+  end if;
+  return new;
+end $$;
+
+create trigger group_live_tenant before insert on {{schema}}."group" for each row execute function {{schema}}.guard_live_tenant();
+create trigger membership_live_tenant before insert on {{schema}}.membership for each row execute function {{schema}}.guard_live_tenant();
+create trigger invitation_live_tenant before insert on {{schema}}.invitation for each row execute function {{schema}}.guard_live_tenant();
+create trigger join_request_live_tenant before insert on {{schema}}.join_request for each row execute function {{schema}}.guard_live_tenant();
+
+create function {{schema}}.guard_deleted_group() returns trigger language plpgsql as $$
+begin
+  if old.state = 'deleted' and not {{schema}}.is_owner_role() then raise exception 'identity:unknown'; end if;
+  return new;
+end $$;
+
+create trigger group_deleted_guard before update on {{schema}}."group" for each row execute function {{schema}}.guard_deleted_group();
+
+-- A deleted group is described by no port and announces nothing more.
+create or replace function {{schema}}.group_json(p_group uuid) returns jsonb language sql stable as $$
+  select jsonb_build_object('groupId', g.group_id, 'tenantId', g.tenant_id, 'lineage', to_jsonb({{schema}}.lineage_of(g.group_id)), 'kind', g.kind, 'state', g.state)
+  from {{schema}}."group" g where g.group_id = p_group and g.state <> 'deleted'
+$$;
+
+create or replace function {{schema}}.group_events() returns trigger language plpgsql security definer set search_path = pg_catalog, pg_temp as $$
+declare
+  v_correlation uuid := {{schema}}.context_uuid('identity.correlation_id');
+  v_actor uuid := {{schema}}.context_uuid('identity.actor_id');
+  v_founder uuid;
+  v_at timestamptz := {{schema}}.context_at();
+  v_changed jsonb;
+begin
+  if new.kind = 'personal' or new.state = 'deleted' then return new; end if;
+  if v_correlation is null then raise exception 'identity:correlation-required'; end if;
+  if tg_op = 'INSERT' then
+    select f.identity_id into v_founder from {{schema}}.founding_claim f where f.group_id = new.group_id;
+    v_founder := coalesce(v_founder, v_actor);
+    if v_founder is null then raise exception 'identity:actor-required'; end if;
+    perform {{schema}}.enqueue_event('group.created', v_actor, 'group', new.group_id, new.version, new.tenant_id, v_correlation, v_at,
+      jsonb_build_object('groupId', new.group_id, 'lineage', to_jsonb({{schema}}.lineage_of(new.group_id)), 'foundingOwnerId', v_founder));
+    return new;
+  end if;
+  if new.name is distinct from old.name then
+    perform {{schema}}.enqueue_event('group.renamed', v_actor, 'group', new.group_id, new.version, new.tenant_id, v_correlation, v_at,
+      jsonb_build_object('groupId', new.group_id));
+  end if;
+  if new.settings is distinct from old.settings then
+    select coalesce(jsonb_agg(k order by k), '[]'::jsonb) into v_changed
+    from jsonb_object_keys(new.settings) k where new.settings -> k is distinct from old.settings -> k;
+    if jsonb_array_length(v_changed) > 0 then
+      perform {{schema}}.enqueue_event('group.settings-changed', v_actor, 'group', new.group_id, new.version, new.tenant_id, v_correlation, v_at,
+        jsonb_build_object('groupId', new.group_id, 'changed', v_changed));
+    end if;
+  end if;
+  return new;
+end $$;
+
+create or replace function {{schema}}.former_group_names(p_identity uuid)
+returns jsonb language sql stable security definer set search_path = pg_catalog, pg_temp as $$
+  select coalesce(jsonb_agg(jsonb_build_object('groupId', former.group_id, 'name', former.name) order by former.name, former.group_id), '[]'::jsonb)
+  from (
+    select g.group_id, g.name
+    from {{schema}}."group" g
+    where g.kind = 'standard' and g.state <> 'deleted'
+      and exists (select 1 from {{schema}}.membership m where m.group_id = g.group_id and m.identity_id = p_identity and m.state = 'ended')
+      and not exists (select 1 from {{schema}}.membership m where m.group_id = g.group_id and m.identity_id = p_identity and m.state <> 'ended')
+    order by g.name, g.group_id
+    limit 1000
+  ) former
+$$;
+
+create or replace function {{schema}}.scim_group(p_group uuid, p_at timestamptz)
+returns jsonb language sql stable security definer set search_path = pg_catalog, pg_temp as $$
+  select jsonb_build_object('groupId', g.group_id, 'externalId', g.external_id, 'name', g.name, 'createdAt', {{schema}}.iso(g.created_at), 'version', g.version,
+    'members', coalesce((select jsonb_agg(m.identity_id order by m.identity_id)
+      from {{schema}}.membership m join {{schema}}.identity i on i.identity_id = m.identity_id
+      where m.group_id = g.group_id and m.state in ('active', 'paused') and i.state in ('active', 'paused')
+        and m.starts_at <= p_at and (m.ends_at is null or m.ends_at > p_at)), '[]'::jsonb))
+  from {{schema}}."group" g where g.group_id = p_group and g.kind = 'standard' and g.state <> 'deleted'
+$$;
+
+-- Legal holds on groups and tenants, and disposal -------------------------------
+
+create table {{schema}}.legal_hold (
+  hold_id uuid primary key,
+  subject_kind text not null check (subject_kind in ('group', 'tenant')),
+  subject_id uuid not null,
+  tenant_id uuid not null references {{schema}}.tenant (tenant_id),
+  reason_code text not null,
+  placed_at timestamptz not null,
+  ends_at timestamptz not null,
+  state text not null check (state in ('active', 'ended')),
+  ended_at timestamptz,
+  ended_how text check (ended_how in ('expired', 'released')),
+  change_id uuid not null,
+  version integer not null check (version >= 1),
+  check (ends_at > placed_at and ends_at <= placed_at + interval '2557 days'),
+  check ((state = 'ended') = (ended_at is not null and ended_how is not null))
+);
+create index legal_hold_subject_idx on {{schema}}.legal_hold (subject_kind, subject_id) where state = 'active';
+create index legal_hold_ends_idx on {{schema}}.legal_hold (ends_at) where state = 'active';
+create trigger legal_hold_version before update on {{schema}}.legal_hold for each row execute function {{schema}}.bump_version();
+
+create table {{schema}}.disposal (
+  subject_kind text not null check (subject_kind in ('group', 'tenant')),
+  subject_id uuid not null,
+  tenant_id uuid not null references {{schema}}.tenant (tenant_id),
+  state text not null check (state in ('deferred', 'due')),
+  deleted_at timestamptz not null,
+  due_at timestamptz,
+  escalated_at timestamptz,
+  primary key (subject_kind, subject_id),
+  check ((state = 'due') = (due_at is not null))
+);
+create index disposal_deferred_idx on {{schema}}.disposal (deleted_at) where state = 'deferred';
+create index disposal_due_idx on {{schema}}.disposal (due_at) where state = 'due';
+
+create table {{schema}}.disposal_confirmation (
+  subject_kind text not null,
+  subject_id uuid not null,
+  member text not null check (member ~ '^[a-z][a-z0-9]*(-[a-z0-9]+)*$' and length(member) <= 32),
+  event_id uuid,
+  confirmed_at timestamptz not null,
+  primary key (subject_kind, subject_id, member),
+  foreign key (subject_kind, subject_id) references {{schema}}.disposal (subject_kind, subject_id)
+);
+
+-- Whether an active hold covers the subject at p_at: a group directly or
+-- through its tenant; a tenant directly. A hold past its end date covers
+-- nothing, even before maintenance records it ended.
+create function {{schema}}.held(p_kind text, p_id uuid, p_at timestamptz) returns boolean language sql stable as $$
+  select exists (select 1 from {{schema}}.legal_hold h where h.state = 'active' and h.ends_at > p_at and (
+    (h.subject_kind = p_kind and h.subject_id = p_id)
+    or (p_kind = 'group' and h.subject_kind = 'tenant' and h.subject_id = (select g.tenant_id from {{schema}}."group" g where g.group_id = p_id))))
+$$;
+
+create function {{schema}}.legal_hold_json(h {{schema}}.legal_hold) returns jsonb language sql stable as $$
+  select jsonb_build_object('holdId', h.hold_id, 'subjectKind', h.subject_kind, 'subjectId', h.subject_id, 'tenantId', h.tenant_id,
+    'reasonCode', h.reason_code, 'placedAt', {{schema}}.iso(h.placed_at), 'endsAt', {{schema}}.iso(h.ends_at), 'state', h.state,
+    'endedAt', {{schema}}.iso(h.ended_at), 'endedHow', h.ended_how, 'changeId', h.change_id, 'version', h.version)
+$$;
+
+-- Identity's own part of a deleted group: everything but the tombstone.
+create function {{schema}}.dispose_group_part(p_group uuid, p_at timestamptz) returns void language plpgsql as $$
+begin
+  delete from {{schema}}.invitation where group_id = p_group;
+  delete from {{schema}}.join_request where group_id = p_group;
+  delete from {{schema}}.pending_change where group_id = p_group and state not in ('awaiting-approval', 'delayed')
+    and change_id is distinct from {{schema}}.context_uuid('identity.change_id');
+  delete from {{schema}}.membership where group_id = p_group;
+  update {{schema}}."group" set name = null, name_skeleton = null, settings = null, external_id = null, safety_periods = '{}'::jsonb
+    where group_id = p_group;
+  insert into {{schema}}.disposal_confirmation values ('group', p_group, 'identity', null, p_at) on conflict do nothing;
+end $$;
+
+-- Identity's own part of a closed tenant: its external identifiers.
+create function {{schema}}.dispose_tenant_part(p_tenant uuid, p_at timestamptz) returns void language plpgsql as $$
+begin
+  delete from {{schema}}.identity_external_id where tenant_id = p_tenant;
+  update {{schema}}.tenant set external_id = null where tenant_id = p_tenant;
+  insert into {{schema}}.disposal_confirmation values ('tenant', p_tenant, 'identity', null, p_at) on conflict do nothing;
+end $$;
+
+-- Closes an identity at once, without a grace period: a service identity
+-- whose owning group is deleted.
+create function {{schema}}.close_now(p_identity uuid, p_at timestamptz) returns void language plpgsql as $$
+declare i {{schema}}.identity%rowtype;
+begin
+  select * into i from {{schema}}.identity where identity_id = p_identity for update;
+  if not found or i.state = 'closed' then return; end if;
+  update {{schema}}.membership set state = 'ended', ended_at = p_at, end_reason = 'identity-closed', reason_code = null
+    where identity_id = p_identity and state <> 'ended';
+  update {{schema}}.identity set state = 'closed', previous_state = null, deadline_at = null, state_changed_at = p_at, version = version + 1
+    where identity_id = p_identity;
+  perform {{schema}}.enqueue_event('identity.closed', {{schema}}.context_uuid('identity.actor_id'), 'identity', p_identity, i.version + 1, null,
+    {{schema}}.context_uuid('identity.correlation_id'), p_at, jsonb_build_object('identityId', p_identity, 'personalGroupId', i.personal_group_id));
+end $$;
+
+-- Deletes a group: it confers nothing from now. Withdraws its pending
+-- changes (but p_change, the one applying), invitations and join requests,
+-- ends its memberships, closes the service identities it owns, records the
+-- disposal (deferred while a hold covers it) and announces it. Callers have
+-- checked the preconditions and set the request context.
+create function {{schema}}.delete_group(p_group uuid, p_at timestamptz, p_change uuid) returns text language plpgsql as $$
+declare
+  g {{schema}}."group"%rowtype;
+  r {{schema}}.join_request%rowtype;
+  c record;
+  v_disposal text;
+  v_version integer;
+begin
+  select * into g from {{schema}}."group" where group_id = p_group for update;
+  if not found or g.state = 'deleted' then raise exception 'identity:unknown'; end if;
+  update {{schema}}."group" set state = 'deleted', deleted_at = p_at where group_id = p_group returning version into v_version;
+  for c in select change_id from {{schema}}.pending_change
+    where group_id = p_group and state in ('awaiting-approval', 'delayed') and change_id is distinct from p_change for update
+  loop
+    perform {{schema}}.close_change(c.change_id, 'cancelled', null, p_at);
+  end loop;
+  update {{schema}}.invitation set state = 'revoked', decided_at = p_at where group_id = p_group and state in ('open', 'awaiting-confirmation');
+  for r in select * from {{schema}}.join_request where group_id = p_group and state = 'open' for update loop
+    perform {{schema}}.close_join_request(r, 'withdrawn', null, null, {{schema}}.context_uuid('identity.correlation_id'), p_at);
+  end loop;
+  update {{schema}}.membership set state = 'ended', ended_at = p_at, end_reason = 'group-deleted', reason_code = null
+    where group_id = p_group and state <> 'ended';
+  for c in select identity_id from {{schema}}.identity where owner_group_id = p_group and state <> 'closed' loop
+    perform {{schema}}.close_now(c.identity_id, p_at);
+  end loop;
+  v_disposal := case when {{schema}}.held('group', p_group, p_at) then 'deferred' else 'due' end;
+  insert into {{schema}}.disposal values ('group', p_group, g.tenant_id, v_disposal, p_at, case when v_disposal = 'due' then p_at end, null);
+  perform {{schema}}.enqueue_event('group.deleted', {{schema}}.context_uuid('identity.actor_id'), 'group', p_group, v_version, g.tenant_id,
+    {{schema}}.context_uuid('identity.correlation_id'), p_at,
+    jsonb_build_object('groupId', p_group, 'tenantId', g.tenant_id, 'kind', g.kind, 'disposal', v_disposal, 'changeId', p_change));
+  if v_disposal = 'due' then perform {{schema}}.dispose_group_part(p_group, p_at); end if;
+  return v_disposal;
+end $$;
+
+-- Every deferred disposal no hold covers any more falls due now.
+create function {{schema}}.release_disposals(p_at timestamptz) returns integer language plpgsql as $$
+declare d record; n integer := 0; v_version integer;
+begin
+  for d in select * from {{schema}}.disposal where state = 'deferred' order by deleted_at for update skip locked loop
+    if {{schema}}.held(d.subject_kind, d.subject_id, p_at) then continue; end if;
+    update {{schema}}.disposal set state = 'due', due_at = p_at where subject_kind = d.subject_kind and subject_id = d.subject_id;
+    if d.subject_kind = 'group' then
+      select version into v_version from {{schema}}."group" where group_id = d.subject_id;
+      perform {{schema}}.enqueue_event('group.disposal-due', null, 'group', d.subject_id, v_version, d.tenant_id,
+        {{schema}}.context_uuid('identity.correlation_id'), p_at, jsonb_build_object('groupId', d.subject_id, 'tenantId', d.tenant_id));
+      perform {{schema}}.dispose_group_part(d.subject_id, p_at);
+    else
+      select version into v_version from {{schema}}.tenant where tenant_id = d.subject_id;
+      perform {{schema}}.enqueue_event('tenant.disposal-due', null, 'tenant', d.subject_id, v_version, d.tenant_id,
+        {{schema}}.context_uuid('identity.correlation_id'), p_at, jsonb_build_object('tenantId', d.subject_id));
+      perform {{schema}}.dispose_tenant_part(d.subject_id, p_at);
+    end if;
+    n := n + 1;
+  end loop;
+  return n;
+end $$;
+
+create function {{schema}}.end_hold(p_hold uuid, p_how text, p_change uuid, p_at timestamptz) returns void language plpgsql as $$
+declare h {{schema}}.legal_hold%rowtype;
+begin
+  update {{schema}}.legal_hold set state = 'ended', ended_at = p_at, ended_how = p_how where hold_id = p_hold and state = 'active' returning * into h;
+  if not found then raise exception 'identity:hold-not-active'; end if;
+  perform {{schema}}.enqueue_event('legal-hold.ended', {{schema}}.context_uuid('identity.actor_id'), 'legal-hold', h.hold_id, h.version, h.tenant_id,
+    {{schema}}.context_uuid('identity.correlation_id'), p_at,
+    jsonb_build_object('holdId', h.hold_id, 'subjectKind', h.subject_kind, 'subjectId', h.subject_id, 'endedHow', p_how, 'changeId', p_change));
+end $$;
+
+-- Tenant shutdown --------------------------------------------------------------
+
+-- Re-homes one identity to p_home: its personal group moves with it when the
+-- data regions match, or is replaced by a new, empty one (the old one
+-- deleted) when they differ.
+create function {{schema}}.rehome(p_identity uuid, p_home uuid, p_at timestamptz) returns void language plpgsql as $$
+declare
+  i {{schema}}.identity%rowtype;
+  v_same_region boolean;
+  v_new uuid;
+begin
+  select * into i from {{schema}}.identity where identity_id = p_identity for update;
+  select (select a.data_region from {{schema}}.tenant a where a.tenant_id = i.home_tenant_id)
+    = (select b.data_region from {{schema}}.tenant b where b.tenant_id = p_home) into v_same_region;
+  v_new := i.personal_group_id;
+  if i.personal_group_id is not null then
+    if v_same_region then
+      update {{schema}}."group" set tenant_id = p_home where group_id = i.personal_group_id;
+      update {{schema}}.membership set tenant_id = p_home where group_id = i.personal_group_id;
+    else
+      v_new := {{schema}}.uuid_v7();
+      update {{schema}}.identity set personal_group_id = null where identity_id = p_identity;
+      insert into {{schema}}."group" (group_id, tenant_id, kind, parent_group_id, name, name_skeleton, external_id, state, settings, created_at, version)
+        values (v_new, p_home, 'personal', null, null, null, null, 'active', null, p_at, 1);
+      insert into {{schema}}.membership (membership_id, identity_id, group_id, tenant_id, kind, state, owner, founding_owner, starts_at, ends_at, ended_at, end_reason, reason_code, created_at, version)
+        values ({{schema}}.uuid_v7(), p_identity, v_new, p_home, 'member', 'active', true, true, p_at, null, null, null, null, p_at, 1);
+      update {{schema}}.membership set state = 'ended', ended_at = p_at, end_reason = 'group-deleted', reason_code = null
+        where group_id = i.personal_group_id and state <> 'ended';
+      perform {{schema}}.delete_group(i.personal_group_id, p_at, null);
+    end if;
+  end if;
+  update {{schema}}.identity set home_tenant_id = p_home, personal_group_id = v_new, version = version + 1 where identity_id = p_identity;
+  perform {{schema}}.enqueue_event('identity.rehomed', null, 'identity', p_identity, i.version + 1, null, {{schema}}.context_uuid('identity.correlation_id'), p_at,
+    jsonb_build_object('identityId', p_identity, 'fromTenantId', i.home_tenant_id, 'toTenantId', p_home,
+      'previousPersonalGroupId', i.personal_group_id, 'personalGroupId', v_new));
+end $$;
+
+-- Closes a tenant at the end of its notice period: re-homes the people whose
+-- home tenant it is, archives and deletes every group in it from the leaves
+-- up, and records the tenant's own disposal.
+create function {{schema}}.close_tenant(p_tenant uuid, p_home uuid, p_at timestamptz) returns void language plpgsql as $$
+declare
+  t {{schema}}.tenant%rowtype;
+  r record;
+  v_version integer;
+  v_disposal text;
+begin
+  select * into t from {{schema}}.tenant where tenant_id = p_tenant for update;
+  if not found or t.state <> 'closing' then raise exception 'identity:not-closing'; end if;
+  if p_home is null or p_home = p_tenant or not exists (select 1 from {{schema}}.tenant h where h.tenant_id = p_home and h.state = 'active') then
+    raise exception 'identity:tenant-unavailable';
+  end if;
+  for r in select identity_id from {{schema}}.identity
+    where home_tenant_id = p_tenant and kind in ('person', 'break-glass') and state not in ('pending', 'closed') order by identity_id
+  loop
+    perform {{schema}}.rehome(r.identity_id, p_home, p_at);
+  end loop;
+  for r in select g.group_id, g.kind, g.state from {{schema}}."group" g
+    where g.tenant_id = p_tenant and g.state <> 'deleted'
+    order by cardinality({{schema}}.lineage_of(g.group_id)) desc, g.group_id
+  loop
+    if r.kind = 'standard' and r.state in ('active', 'orphaned') then
+      update {{schema}}."group" set state = 'archived' where group_id = r.group_id returning version into v_version;
+      perform {{schema}}.enqueue_event('group.archived', null, 'group', r.group_id, v_version, p_tenant,
+        {{schema}}.context_uuid('identity.correlation_id'), p_at, jsonb_build_object('groupId', r.group_id, 'changeId', t.closing_change_id));
+    end if;
+    perform {{schema}}.delete_group(r.group_id, p_at, t.closing_change_id);
+  end loop;
+  -- Identities still homed here (pending ones, which can never be confirmed now) keep the tombstone as their home.
+  v_disposal := case when {{schema}}.held('tenant', p_tenant, p_at) then 'deferred' else 'due' end;
+  update {{schema}}.tenant set state = 'closed', closes_at = null, closing_change_id = null, closed_at = p_at, version = version + 1
+    where tenant_id = p_tenant returning version into v_version;
+  insert into {{schema}}.disposal values ('tenant', p_tenant, p_tenant, v_disposal, p_at, case when v_disposal = 'due' then p_at end, null);
+  perform {{schema}}.enqueue_event('tenant.closed', null, 'tenant', p_tenant, v_version, p_tenant, {{schema}}.context_uuid('identity.correlation_id'), p_at,
+    jsonb_build_object('tenantId', p_tenant, 'disposal', v_disposal));
+  if v_disposal = 'due' then perform {{schema}}.dispose_tenant_part(p_tenant, p_at); end if;
+end $$;
+
+-- Applying the end-of-life changes (internal) -------------------------------------
+-- Runs as the owner, inside settle_change. Every rule is checked again here.
+
+create function {{schema}}.apply_end_of_life(c {{schema}}.pending_change, p_at timestamptz) returns void language plpgsql as $$
+declare
+  v_group {{schema}}."group"%rowtype;
+  t {{schema}}.tenant%rowtype;
+  h {{schema}}.legal_hold%rowtype;
+  v_tenant uuid;
+  v_kind text;
+  v_id uuid;
+  v_ends timestamptz;
+  v_version integer;
+  r record;
+begin
+  if {{schema}}.digest_of(c) <> c.change_digest then raise exception 'identity:change-differs'; end if;
+  perform {{schema}}.set_context(c.requester_id, c.correlation_id, p_at);
+  perform set_config('identity.change_id', c.change_id::text, true);
+
+  if c.type = 'group.delete' then
+    select * into v_group from {{schema}}."group" where group_id = (c.target ->> 'groupId')::uuid and kind = 'standard' for update;
+    if not found or v_group.state = 'deleted' then raise exception 'identity:unknown'; end if;
+    if v_group.state <> 'archived' then raise exception 'identity:group-not-archived'; end if;
+    if v_group.parent_group_id is null then raise exception 'identity:root-group'; end if;
+    if v_group.group_id = (c.internal ->> 'platformGroupId')::uuid then raise exception 'identity:platform-group'; end if;
+    if v_group.archived_at is null or v_group.archived_at + make_interval(hours => (c.internal ->> 'archivedForHours')::integer) > p_at then
+      raise exception 'identity:archived-too-recently';
+    end if;
+    if exists (select 1 from {{schema}}."group" g where g.parent_group_id = v_group.group_id and g.state <> 'deleted') then
+      raise exception 'identity:live-children';
+    end if;
+    perform {{schema}}.delete_group(v_group.group_id, p_at, c.change_id);
+
+  elsif c.type in ('tenant.close', 'tenant.cancel-closing') then
+    select * into t from {{schema}}.tenant where tenant_id = (c.target ->> 'tenantId')::uuid for update;
+    if not found then raise exception 'identity:unknown'; end if;
+    if c.type = 'tenant.close' then
+      if t.state <> 'active' then raise exception 'identity:tenant-not-active'; end if;
+      if t.tenant_id = (c.internal ->> 'platformTenantId')::uuid or t.tenant_id = (c.internal ->> 'defaultHomeTenantId')::uuid then
+        raise exception 'identity:tenant-protected';
+      end if;
+      if not exists (select 1 from {{schema}}.tenant d where d.tenant_id = (c.internal ->> 'defaultHomeTenantId')::uuid and d.state = 'active') then
+        raise exception 'identity:tenant-unavailable';
+      end if;
+      -- Never approved by the tenant's own owners.
+      if exists (select 1 from jsonb_array_elements(c.approvals) a, {{schema}}."group" g
+        where a ->> 'decision' = 'approve' and g.tenant_id = t.tenant_id and g.kind = 'standard' and g.parent_group_id is null
+          and g.state <> 'deleted' and {{schema}}.owns((a ->> 'approverId')::uuid, g.group_id)) then
+        raise exception 'identity:approval-refused';
+      end if;
+      update {{schema}}.tenant set state = 'closing', closes_at = p_at + make_interval(days => (c.internal ->> 'noticeDays')::integer),
+        closing_change_id = c.change_id, version = version + 1
+        where tenant_id = t.tenant_id returning * into t;
+      perform {{schema}}.enqueue_event('tenant.closing', c.requester_id, 'tenant', t.tenant_id, t.version, t.tenant_id, c.correlation_id, p_at,
+        jsonb_build_object('tenantId', t.tenant_id, 'closesAt', {{schema}}.iso(t.closes_at)));
+      for r in select identity_id, version from {{schema}}.identity
+        where home_tenant_id = t.tenant_id and kind in ('person', 'break-glass') and state not in ('pending', 'closed') order by identity_id
+      loop
+        perform {{schema}}.enqueue_event('identity.rehoming-scheduled', c.requester_id, 'identity', r.identity_id, r.version, null, c.correlation_id, p_at,
+          jsonb_build_object('identityId', r.identity_id, 'tenantId', t.tenant_id, 'at', {{schema}}.iso(t.closes_at)));
+      end loop;
+    else
+      if t.state <> 'closing' or t.closes_at <= p_at then raise exception 'identity:not-closing'; end if;
+      update {{schema}}.tenant set state = 'active', closes_at = null, closing_change_id = null, version = version + 1
+        where tenant_id = t.tenant_id returning * into t;
+      perform {{schema}}.enqueue_event('tenant.closing-cancelled', c.requester_id, 'tenant', t.tenant_id, t.version, t.tenant_id, c.correlation_id, p_at,
+        jsonb_build_object('tenantId', t.tenant_id));
+      for r in select identity_id, version from {{schema}}.identity
+        where home_tenant_id = t.tenant_id and kind in ('person', 'break-glass') and state not in ('pending', 'closed') order by identity_id
+      loop
+        perform {{schema}}.enqueue_event('identity.rehoming-cancelled', c.requester_id, 'identity', r.identity_id, r.version, null, c.correlation_id, p_at,
+          jsonb_build_object('identityId', r.identity_id, 'tenantId', t.tenant_id));
+      end loop;
+    end if;
+
+  elsif c.type = 'legal-hold.place' then
+    v_kind := c.target ->> 'subjectKind';
+    v_id := (c.target ->> 'subjectId')::uuid;
+    v_ends := (c.target ->> 'endsAt')::timestamptz;
+    if v_ends <= p_at or v_ends > p_at + interval '2557 days' then raise exception 'identity:invalid-dates'; end if;
+    if v_kind = 'group' then
+      select g.tenant_id into v_tenant from {{schema}}."group" g where g.group_id = v_id;
+    elsif v_kind = 'tenant' then
+      select x.tenant_id into v_tenant from {{schema}}.tenant x where x.tenant_id = v_id;
+    end if;
+    if v_tenant is null then raise exception 'identity:unknown'; end if;
+    if exists (select 1 from {{schema}}.disposal d where d.subject_kind = v_kind and d.subject_id = v_id and d.state = 'due') then
+      raise exception 'identity:disposal-started';
+    end if;
+    insert into {{schema}}.legal_hold values (c.created_id, v_kind, v_id, v_tenant, c.reason_code, p_at, v_ends, 'active', null, null, c.change_id, 1);
+    perform {{schema}}.enqueue_event('legal-hold.placed', c.requester_id, 'legal-hold', c.created_id, 1, v_tenant, c.correlation_id, p_at,
+      jsonb_build_object('holdId', c.created_id, 'subjectKind', v_kind, 'subjectId', v_id, 'reasonCode', c.reason_code,
+        'endsAt', {{schema}}.iso(v_ends), 'changeId', c.change_id));
+
+  elsif c.type = 'legal-hold.release' then
+    perform {{schema}}.end_hold((c.target ->> 'holdId')::uuid, 'released', c.change_id, p_at);
+    perform {{schema}}.release_disposals(p_at);
+
+  else
+    raise exception 'identity:unknown-change';
+  end if;
+
+  perform set_config('identity.change_id', '', true);
+end $$;
+
+create or replace function {{schema}}.declared_risk(p_type text) returns text language sql immutable as $$
+  select case p_type
+    when 'group.create-root' then 'high' when 'group.reparent' then 'critical' when 'group.archive' then 'high'
+    when 'group.change-settings' then 'high' when 'group.change-approvals' then 'critical'
+    when 'group.change-safety-periods' then 'critical'
+    when 'group.add-owner' then 'critical' when 'group.remove-owner' then 'critical' when 'group.suspend-owner' then 'critical'
+    when 'membership.reinstate' then 'medium' when 'membership.schedule' then 'medium'
+    when 'identity.suspend' then 'high' when 'identity.reinstate' then 'high' when 'service-identity.create' then 'high'
+    when 'group.delete' then 'critical' when 'tenant.close' then 'critical' when 'tenant.cancel-closing' then 'critical'
+    when 'legal-hold.place' then 'critical' when 'legal-hold.release' then 'critical'
+  end
+$$;
+
+create or replace function {{schema}}.settle_change(p_change uuid, p_at timestamptz, p_actor uuid) returns text language plpgsql as $$
+declare c {{schema}}.pending_change%rowtype; v_outcome text; v_version integer;
+begin
+  select * into c from {{schema}}.pending_change where change_id = p_change for update;
+  if c.held_until is not null and c.held_until > p_at then
+    update {{schema}}.pending_change set state = 'delayed', delay_ends_at = c.held_until where change_id = p_change;
+    return 'held';
+  end if;
+  begin
+    if c.type = 'group.appoint-owner' then
+      if {{schema}}.digest_of(c) <> c.change_digest then raise exception 'identity:change-differs'; end if;
+      perform {{schema}}.set_context(c.requester_id, c.correlation_id, p_at);
+      perform set_config('identity.change_id', c.change_id::text, true);
+      perform {{schema}}.appoint_owner((c.target ->> 'membershipId')::uuid, p_at);
+      perform set_config('identity.change_id', '', true);
+    elsif c.type = 'group.change-safety-periods' then
+      perform {{schema}}.apply_safety_periods(c, p_at);
+    elsif c.type in ('group.delete', 'tenant.close', 'tenant.cancel-closing', 'legal-hold.place', 'legal-hold.release') then
+      perform {{schema}}.apply_end_of_life(c, p_at);
+    else
+      perform {{schema}}.apply_change(c, p_at);
+    end if;
+    update {{schema}}.pending_change set state = 'applied', decided_at = p_at where change_id = p_change returning version into v_version;
+    v_outcome := 'applied';
+  exception when others then
+    update {{schema}}.pending_change set state = 'rejected', decided_at = p_at, failure = left(sqlerrm, 200) where change_id = p_change returning version into v_version;
+    v_outcome := 'rejected';
+  end;
+  perform {{schema}}.enqueue_event('approval.decided', p_actor, 'approval', p_change, v_version, c.tenant_id, c.correlation_id, p_at,
+    jsonb_build_object('changeId', p_change, 'outcome', v_outcome));
+  return v_outcome;
+end $$;
+
+-- The tenant closing notice is a platform-only safety period ------------------------
+
+create or replace function {{schema}}.safety_rule(p_key text) returns jsonb language sql immutable as $$
+  select '{
+    "publishedDelayHighHours": {"min": 24, "max": 336, "longer": true, "hours": 1},
+    "publishedDelayCriticalHours": {"min": 72, "max": 720, "longer": true, "hours": 1},
+    "approvalExpiryDays": {"min": 1, "max": 14, "longer": false, "hours": 24},
+    "orphanRecoveryDelayDays": {"min": 7, "max": 60, "longer": true, "hours": 24},
+    "recoveryHoldHours": {"min": 24, "max": 336, "longer": true, "hours": 1},
+    "closureGraceDays": {"min": 7, "max": 90, "longer": true, "hours": 24},
+    "tenantClosingNoticeDays": {"min": 30, "max": 180, "longer": true, "hours": 24}
+  }'::jsonb -> p_key
+$$;
+
+create or replace function {{schema}}.safety_keys() returns text[] language sql immutable as $$
+  select array['publishedDelayHighHours', 'publishedDelayCriticalHours', 'approvalExpiryDays', 'orphanRecoveryDelayDays', 'recoveryHoldHours',
+    'closureGraceDays', 'tenantClosingNoticeDays']
+$$;
+
+create function {{schema}}.platform_only(p_key text) returns boolean language sql immutable as $$
+  select p_key in ('closureGraceDays', 'tenantClosingNoticeDays')
+$$;
+
+create or replace function {{schema}}.effective_periods(p_group uuid, p_platform uuid, p_host jsonb, p_own jsonb) returns jsonb language plpgsql stable as $$
+declare
+  v_own jsonb;
+  v_root jsonb;
+  v_platform jsonb;
+  v_lineage uuid[];
+  v_result jsonb := '{}'::jsonb;
+  k text;
+  v numeric;
+begin
+  select coalesce(p_own, g.safety_periods) into v_own from {{schema}}."group" g where g.group_id = p_group;
+  v_lineage := {{schema}}.lineage_of(p_group);
+  if cardinality(v_lineage) > 1 then
+    select g.safety_periods into v_root from {{schema}}."group" g where g.group_id = v_lineage[1];
+  end if;
+  if p_platform is not null and p_platform = p_group then
+    v_platform := {{schema}}.platform_periods(v_own, p_host);
+  elsif p_platform is not null then
+    select {{schema}}.platform_periods(g.safety_periods, p_host) into v_platform from {{schema}}."group" g where g.group_id = p_platform and g.kind = 'standard';
+  end if;
+  v_platform := coalesce(v_platform, {{schema}}.platform_periods('{}'::jsonb, p_host));
+  foreach k in array {{schema}}.safety_keys() loop
+    v := (v_platform ->> k)::numeric;
+    if not {{schema}}.platform_only(k) then
+      v := {{schema}}.safer(k, v, (v_root ->> k)::numeric);
+      v := {{schema}}.safer(k, v, (v_own ->> k)::numeric);
+    end if;
+    v_result := v_result || jsonb_build_object(k, v);
+  end loop;
+  return v_result;
+end $$;
+
+create or replace function {{schema}}.apply_safety_periods(c {{schema}}.pending_change, p_at timestamptz) returns void language plpgsql as $$
+declare
+  v_group {{schema}}."group"%rowtype;
+  v_platform uuid := (c.internal ->> 'platformGroupId')::uuid;
+  v_host jsonb := c.internal -> 'hostPeriods';
+  v_next jsonb := c.target -> 'safetyPeriods';
+  v_above jsonb;
+  v_version integer;
+  k text;
+begin
+  if {{schema}}.digest_of(c) <> c.change_digest then raise exception 'identity:change-differs'; end if;
+  perform {{schema}}.set_context(c.requester_id, c.correlation_id, p_at);
+  perform set_config('identity.change_id', c.change_id::text, true);
+  select * into v_group from {{schema}}."group" where group_id = (c.target ->> 'groupId')::uuid and kind = 'standard' for update;
+  if not found then raise exception 'identity:unknown'; end if;
+  if v_group.state <> 'active' then raise exception 'identity:group-not-active'; end if;
+  if v_group.safety_periods <> (c.internal -> 'basePeriods') then raise exception 'identity:changed-since-request'; end if;
+  if not {{schema}}.safety_periods_valid(v_next) then raise exception 'identity:invalid-safety-periods'; end if;
+  if v_platform is null or v_platform <> v_group.group_id then
+    if exists (select 1 from jsonb_object_keys(v_next) setting where {{schema}}.platform_only(setting)) then raise exception 'identity:platform-only'; end if;
+    v_above := {{schema}}.effective_periods(v_group.group_id, v_platform, v_host, '{}'::jsonb);
+    for k in select jsonb_object_keys(v_next) loop
+      if {{schema}}.less_safe(k, (v_next ->> k)::numeric, (v_above ->> k)::numeric) then raise exception 'identity:safety-period-floor'; end if;
+    end loop;
+  end if;
+  update {{schema}}."group" set safety_periods = v_next where group_id = v_group.group_id returning version into v_version;
+  perform {{schema}}.enqueue_event('group.settings-changed', c.requester_id, 'group', v_group.group_id, v_version, v_group.tenant_id, c.correlation_id, p_at,
+    jsonb_build_object('groupId', v_group.group_id, 'changed', jsonb_build_array('safetyPeriods')));
+  perform set_config('identity.change_id', '', true);
+end $$;
+
+-- Closure deletes the personal group ------------------------------------------------
+
+create or replace function {{schema}}.close_due_identities(p_correlation uuid, p_at timestamptz, p_limit integer)
+returns integer language plpgsql volatile security definer set search_path = pg_catalog, pg_temp as $$
+declare i record; c record; r {{schema}}.join_request%rowtype; n integer := 0;
+begin
+  for i in select identity_id, version, personal_group_id from {{schema}}.identity
+    where state = 'closure-pending' and deadline_at <= p_at order by deadline_at limit p_limit for update skip locked
+  loop
+    perform {{schema}}.set_context(null, p_correlation, p_at);
+    update {{schema}}.membership set state = 'ended', ended_at = p_at, end_reason = 'identity-closed', reason_code = null
+      where identity_id = i.identity_id and state <> 'ended';
+    for c in select change_id from {{schema}}.pending_change where requester_id = i.identity_id and state in ('awaiting-approval', 'delayed') for update loop
+      perform {{schema}}.close_change(c.change_id, 'cancelled', null, p_at);
+    end loop;
+    update {{schema}}.invitation set state = 'revoked', decided_at = p_at
+      where state in ('open', 'awaiting-confirmation') and (invited_by = i.identity_id or accepted_by = i.identity_id or invitee_identity_id = i.identity_id);
+    for r in select * from {{schema}}.join_request where identity_id = i.identity_id and state = 'open' for update loop
+      perform {{schema}}.close_join_request(r, 'withdrawn', null, null, p_correlation, p_at);
+    end loop;
+    if i.personal_group_id is not null then
+      perform {{schema}}.delete_group(i.personal_group_id, p_at, null);
+    end if;
+    update {{schema}}.identity set state = 'closed', previous_state = null, deadline_at = null, state_changed_at = p_at, version = version + 1
+      where identity_id = i.identity_id;
+    perform {{schema}}.enqueue_event('identity.closed', null, 'identity', i.identity_id, i.version + 1, null, p_correlation, p_at,
+      jsonb_build_object('identityId', i.identity_id, 'personalGroupId', i.personal_group_id));
+    n := n + 1;
+  end loop;
+  return n;
+end $$;
+
+-- Port functions (SECURITY DEFINER; granted) ----------------------------------------
+
+-- Whether a hold covers a group (directly or through its tenant) or a tenant now.
+create function {{schema}}.legal_hold_covers(p_kind text, p_id uuid, p_at timestamptz)
+returns boolean language sql stable security definer set search_path = pg_catalog, pg_temp as $$
+  select {{schema}}.held(p_kind, p_id, p_at)
+$$;
+
+create function {{schema}}.get_legal_hold(p_hold uuid) returns jsonb language sql stable security definer set search_path = pg_catalog, pg_temp as $$
+  select {{schema}}.legal_hold_json(h) from {{schema}}.legal_hold h where h.hold_id = p_hold
+$$;
+
+-- What the layer needs to check a deletion before it is requested.
+create function {{schema}}.deletion_facts(p_group uuid) returns jsonb language sql stable security definer set search_path = pg_catalog, pg_temp as $$
+  select jsonb_build_object('state', g.state, 'kind', g.kind, 'parentGroupId', g.parent_group_id, 'archivedAt', {{schema}}.iso(g.archived_at),
+    'liveChildren', exists (select 1 from {{schema}}."group" c where c.parent_group_id = g.group_id and c.state <> 'deleted'))
+  from {{schema}}."group" g where g.group_id = p_group
+$$;
+
+-- A tenant's state, and its root groups, for tenant changes and the export.
+create function {{schema}}.tenant_facts(p_tenant uuid) returns jsonb language sql stable security definer set search_path = pg_catalog, pg_temp as $$
+  select jsonb_build_object('tenantId', t.tenant_id, 'state', t.state, 'closesAt', {{schema}}.iso(t.closes_at),
+    'rootGroupIds', coalesce((select jsonb_agg(g.group_id order by g.group_id) from {{schema}}."group" g
+      where g.tenant_id = t.tenant_id and g.kind = 'standard' and g.parent_group_id is null and g.state <> 'deleted'), '[]'::jsonb))
+  from {{schema}}.tenant t where t.tenant_id = p_tenant
+$$;
+
+-- A member confirms its part of a due disposal. Idempotent; a confirmation
+-- for a disposal that is not due, or unknown, changes nothing.
+create function {{schema}}.record_disposal(p_kind text, p_id uuid, p_member text, p_event uuid, p_at timestamptz)
+returns boolean language plpgsql volatile security definer set search_path = pg_catalog, pg_temp as $$
+begin
+  if p_member = 'identity' then return false; end if;
+  if not exists (select 1 from {{schema}}.disposal d where d.subject_kind = p_kind and d.subject_id = p_id and d.state = 'due') then return false; end if;
+  insert into {{schema}}.disposal_confirmation values (p_kind, p_id, p_member, p_event, p_at) on conflict do nothing;
+  return true;
+end $$;
+
+create function {{schema}}.get_disposal(p_kind text, p_id uuid) returns jsonb language sql stable security definer set search_path = pg_catalog, pg_temp as $$
+  select jsonb_build_object('subjectKind', d.subject_kind, 'subjectId', d.subject_id, 'tenantId', d.tenant_id, 'state', d.state,
+    'deletedAt', {{schema}}.iso(d.deleted_at), 'dueAt', {{schema}}.iso(d.due_at), 'escalatedAt', {{schema}}.iso(d.escalated_at),
+    'confirmedBy', coalesce((select jsonb_agg(c.member order by c.member) from {{schema}}.disposal_confirmation c
+      where c.subject_kind = d.subject_kind and c.subject_id = d.subject_id), '[]'::jsonb))
+  from {{schema}}.disposal d where d.subject_kind = p_kind and d.subject_id = p_id
+$$;
+
+-- A closing tenant's governance records, for an owner of one of its root
+-- groups whom the layer has authorised. Announces each download.
+create function {{schema}}.export_tenant(p_tenant uuid, p_requester uuid, p_correlation uuid, p_at timestamptz, p_limit integer)
+returns jsonb language plpgsql volatile security definer set search_path = pg_catalog, pg_temp as $$
+declare t {{schema}}.tenant%rowtype; v_result jsonb;
+begin
+  select * into t from {{schema}}.tenant where tenant_id = p_tenant;
+  if not found then return null; end if;
+  if t.state <> 'closing' then raise exception 'identity:not-closing'; end if;
+  v_result := jsonb_build_object(
+    'tenant', jsonb_build_object('tenantId', t.tenant_id, 'state', t.state, 'jurisdiction', t.jurisdiction, 'dataRegion', t.data_region,
+      'createdAt', {{schema}}.iso(t.created_at), 'closesAt', {{schema}}.iso(t.closes_at)),
+    'groups', coalesce((select jsonb_agg(jsonb_build_object('groupId', g.group_id, 'parentGroupId', g.parent_group_id, 'kind', g.kind, 'name', g.name,
+        'state', g.state, 'settings', g.settings, 'createdAt', {{schema}}.iso(g.created_at)) order by g.group_id)
+      from (select * from {{schema}}."group" where tenant_id = p_tenant and kind = 'standard' order by group_id limit p_limit) g), '[]'::jsonb),
+    'memberships', coalesce((select jsonb_agg(jsonb_build_object('membershipId', m.membership_id, 'identityId', m.identity_id, 'groupId', m.group_id,
+        'kind', m.kind, 'state', m.state, 'owner', m.owner, 'startsAt', {{schema}}.iso(m.starts_at), 'endsAt', {{schema}}.iso(m.ends_at),
+        'endedAt', {{schema}}.iso(m.ended_at), 'endReason', m.end_reason) order by m.membership_id)
+      from (select m.* from {{schema}}.membership m join {{schema}}."group" g on g.group_id = m.group_id
+        where m.tenant_id = p_tenant and g.kind = 'standard' order by m.membership_id limit p_limit) m), '[]'::jsonb),
+    'changes', coalesce((select jsonb_agg(jsonb_build_object('changeId', c.change_id, 'type', c.type, 'groupId', c.group_id, 'requesterId', c.requester_id,
+        'beneficiaryId', c.beneficiary_id, 'risk', c.risk, 'reasonCode', c.reason_code, 'state', c.state,
+        'createdAt', {{schema}}.iso(c.created_at), 'decidedAt', {{schema}}.iso(c.decided_at)) order by c.change_id)
+      from (select * from {{schema}}.pending_change where tenant_id = p_tenant and state in ('applied', 'rejected', 'expired', 'cancelled')
+        order by change_id limit p_limit) c), '[]'::jsonb));
+  perform {{schema}}.enqueue_event('tenant.exported', p_requester, 'tenant', t.tenant_id, t.version, t.tenant_id, p_correlation, p_at,
+    jsonb_build_object('tenantId', t.tenant_id, 'requesterId', p_requester));
+  return v_result;
+end $$;
+
+-- Maintenance: ends holds past their date, lets deferred disposals fall due,
+-- closes tenants at the end of their notice period, and raises disposals a
+-- member has not confirmed within 7 days. A tenant that cannot close yet
+-- (no default home tenant) stays closing and is counted.
+create function {{schema}}.run_end_of_life(p_correlation uuid, p_at timestamptz, p_limit integer, p_home uuid, p_participants text[])
+returns jsonb language plpgsql volatile security definer set search_path = pg_catalog, pg_temp as $$
+declare
+  r record;
+  v_ended integer := 0;
+  v_due integer;
+  v_closed integer := 0;
+  v_blocked integer := 0;
+  v_overdue integer := 0;
+  v_missing text[];
+  v_version integer;
+begin
+  perform {{schema}}.set_context(null, p_correlation, p_at);
+  for r in select hold_id from {{schema}}.legal_hold where state = 'active' and ends_at <= p_at order by ends_at limit p_limit for update skip locked loop
+    perform {{schema}}.end_hold(r.hold_id, 'expired', null, p_at);
+    v_ended := v_ended + 1;
+  end loop;
+  v_due := {{schema}}.release_disposals(p_at);
+  for r in select tenant_id from {{schema}}.tenant where state = 'closing' and closes_at <= p_at order by closes_at limit p_limit loop
+    begin
+      perform {{schema}}.close_tenant(r.tenant_id, p_home, p_at);
+      v_closed := v_closed + 1;
+    exception when others then
+      v_blocked := v_blocked + 1;
+    end;
+  end loop;
+  for r in select * from {{schema}}.disposal
+    where state = 'due' and due_at <= p_at - interval '7 days' and (escalated_at is null or escalated_at <= p_at - interval '7 days')
+    order by due_at limit p_limit for update skip locked
+  loop
+    select coalesce(array_agg(p order by p), '{}') into v_missing from unnest(coalesce(p_participants, '{}')) p
+      where not exists (select 1 from {{schema}}.disposal_confirmation c where c.subject_kind = r.subject_kind and c.subject_id = r.subject_id and c.member = p);
+    if cardinality(v_missing) = 0 then continue; end if;
+    update {{schema}}.disposal set escalated_at = p_at where subject_kind = r.subject_kind and subject_id = r.subject_id;
+    if r.subject_kind = 'group' then
+      select version into v_version from {{schema}}."group" where group_id = r.subject_id;
+      perform {{schema}}.enqueue_event('group.disposal-overdue', null, 'group', r.subject_id, v_version, r.tenant_id, p_correlation, p_at,
+        jsonb_build_object('groupId', r.subject_id, 'members', to_jsonb(v_missing)));
+    else
+      select version into v_version from {{schema}}.tenant where tenant_id = r.subject_id;
+      perform {{schema}}.enqueue_event('tenant.disposal-overdue', null, 'tenant', r.subject_id, v_version, r.tenant_id, p_correlation, p_at,
+        jsonb_build_object('tenantId', r.subject_id, 'members', to_jsonb(v_missing)));
+    end if;
+    v_overdue := v_overdue + 1;
+  end loop;
+  return jsonb_build_object('holdsEnded', v_ended, 'disposalsDue', v_due, 'tenantsClosed', v_closed, 'tenantsBlocked', v_blocked, 'disposalsOverdue', v_overdue);
+end $$;
+
+-- Retention: deletes what has outlived its period, never what a hold covers
+-- or a process still needs, and announces the counts.
+create function {{schema}}.apply_retention(p_correlation uuid, p_at timestamptz, p_days jsonb)
+returns jsonb language plpgsql volatile security definer set search_path = pg_catalog, pg_temp as $$
+declare
+  v_counts jsonb;
+  n_outbox integer; n_invitations integer; n_attempts integer; n_requests integer; n_changes integer; n_reviews integer;
+  cutoff timestamptz;
+begin
+  cutoff := p_at - make_interval(days => greatest((p_days ->> 'retentionOutboxDays')::integer, 7));
+  delete from {{schema}}.outbox where published_at is not null and published_at <= cutoff;
+  get diagnostics n_outbox = row_count;
+  cutoff := p_at - make_interval(days => greatest((p_days ->> 'retentionInvitationDays')::integer, 14));
+  delete from {{schema}}.invitation i where i.state not in ('open', 'awaiting-confirmation') and coalesce(i.decided_at, i.expires_at) <= cutoff
+    and not {{schema}}.held('group', i.group_id, p_at);
+  get diagnostics n_invitations = row_count;
+  delete from {{schema}}.acceptance_attempt where attempted_at <= cutoff;
+  get diagnostics n_attempts = row_count;
+  cutoff := p_at - make_interval(days => greatest((p_days ->> 'retentionJoinRequestDays')::integer, 30));
+  delete from {{schema}}.join_request r where r.state <> 'open' and r.decided_at <= cutoff and not {{schema}}.held('group', r.group_id, p_at);
+  get diagnostics n_requests = row_count;
+  cutoff := p_at - make_interval(days => greatest((p_days ->> 'retentionGovernanceChangeDays')::integer, 365));
+  delete from {{schema}}.pending_change c where c.state not in ('awaiting-approval', 'delayed') and c.decided_at <= cutoff
+    and not {{schema}}.held('group', c.group_id, p_at)
+    and not (c.type = 'service-identity.create' and exists (select 1 from {{schema}}.identity s where s.identity_id = c.created_id and s.state <> 'closed'))
+    and not exists (select 1 from {{schema}}.tenant t where t.closing_change_id = c.change_id);
+  get diagnostics n_changes = row_count;
+  cutoff := p_at - make_interval(days => greatest((p_days ->> 'retentionBreakGlassReviewDays')::integer, 730));
+  delete from {{schema}}.break_glass_review where state = 'closed' and closed_at <= cutoff;
+  get diagnostics n_reviews = row_count;
+  v_counts := jsonb_build_object('outboxEvents', n_outbox, 'invitations', n_invitations, 'acceptanceAttempts', n_attempts,
+    'joinRequests', n_requests, 'governanceChanges', n_changes, 'breakGlassReviews', n_reviews);
+  -- Announced only when the run deleted something, so that an idle platform's outbox stays quiet.
+  if n_outbox + n_invitations + n_attempts + n_requests + n_changes + n_reviews > 0 then
+    perform {{schema}}.enqueue_event('identity.retention-applied', null, 'retention', {{schema}}.uuid_v7(), 1, null, p_correlation, p_at,
+      jsonb_build_object('counts', v_counts));
+  end if;
+  return v_counts;
+end $$;
+
+-- Privileges ----------------------------------------------------------------
+
+revoke all on all functions in schema {{schema}} from public;
+grant execute on function
+  {{schema}}.legal_hold_covers(text, uuid, timestamptz),
+  {{schema}}.get_legal_hold(uuid),
+  {{schema}}.deletion_facts(uuid),
+  {{schema}}.tenant_facts(uuid),
+  {{schema}}.record_disposal(text, uuid, text, uuid, timestamptz),
+  {{schema}}.get_disposal(text, uuid),
+  {{schema}}.export_tenant(uuid, uuid, uuid, timestamptz, integer),
+  {{schema}}.run_end_of_life(uuid, timestamptz, integer, uuid, text[]),
+  {{schema}}.apply_retention(uuid, timestamptz, jsonb)
+to {{runtime}};
+`,
+  },
 ]
 
 const IDENTIFIER_PATTERN = /^[a-z_][a-z0-9_]{0,62}$/

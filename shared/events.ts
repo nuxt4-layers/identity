@@ -2,11 +2,12 @@ import { z } from 'zod'
 import { BREAK_GLASS_ACTIONS } from './break-glass'
 import { GOVERNANCE_CHANGE_TYPES } from './approvals'
 import type { GovernanceChangeType } from './approvals'
-import { lineageSchema } from './group'
+import { GROUP_KINDS, lineageSchema } from './group'
 import { correlationIdSchema, identifierSchema, instantSchema, reasonCodeSchema, registryCodeSchema, versionSchema } from './identifiers'
 import { IDENTITY_KINDS } from './identity'
 import { MEMBERSHIP_END_REASONS, MEMBERSHIP_KINDS } from './membership'
 import { IDENTITY_RISK_LEVELS } from './permissions'
+import { disposalMemberSchema, LEGAL_HOLD_SUBJECT_KINDS, retentionCountsSchema } from './end-of-life'
 
 /**
  * Identity's events (docs/contracts.md §11; iam-integration architecture §4).
@@ -53,7 +54,36 @@ const payloads = {
   'join-request.created': z.strictObject({ joinRequestId: id, groupId: id, identityId: id }),
   'join-request.decided': z.strictObject({ joinRequestId: id, groupId: id, identityId: id, outcome: z.enum(['approved', 'refused', 'withdrawn', 'expired']) }),
   'tenant.created': z.strictObject({ tenantId: id, jurisdiction: registryCodeSchema, dataRegion: registryCodeSchema }),
-  'tenant.closing': z.strictObject({ tenantId: id }),
+  'tenant.closing': z.strictObject({ tenantId: id, closesAt: instantSchema }),
+  'tenant.closing-cancelled': z.strictObject({ tenantId: id }),
+  /** Every group in it deleted. `disposal` is `deferred` while a legal hold covers the tenant. */
+  'tenant.closed': z.strictObject({ tenantId: id, disposal: z.enum(['due', 'deferred']) }),
+  'tenant.disposal-due': z.strictObject({ tenantId: id }),
+  'tenant.disposal-overdue': z.strictObject({ tenantId: id, members: z.array(disposalMemberSchema).min(1).max(64) }),
+  /** An owner of a root group downloaded the closing tenant's governance records. */
+  'tenant.exported': z.strictObject({ tenantId: id, requesterId: id }),
+  /**
+   * A deleted group confers nothing from now. `disposal` is `due` (every
+   * member disposes of its part now) or `deferred` (a legal hold covers it;
+   * `group.disposal-due` follows when the hold ends).
+   */
+  'group.deleted': z.strictObject({ groupId: id, tenantId: id, kind: z.enum(GROUP_KINDS), disposal: z.enum(['due', 'deferred']), changeId: id.nullable() }),
+  'group.disposal-due': z.strictObject({ groupId: id, tenantId: id }),
+  /** Members that have not confirmed a due disposal within 7 days, for operators. */
+  'group.disposal-overdue': z.strictObject({ groupId: id, members: z.array(disposalMemberSchema).min(1).max(64) }),
+  /** A person's home tenant is closing: they will be re-homed on `at`. For the host's notification capability. */
+  'identity.rehoming-scheduled': z.strictObject({ identityId: id, tenantId: id, at: instantSchema }),
+  'identity.rehoming-cancelled': z.strictObject({ identityId: id, tenantId: id }),
+  /**
+   * The identity's home tenant changed. Its personal group moved with it
+   * (the same identifier) when the data regions match, or was replaced by a
+   * new, empty one (and the old one deleted) when they differ.
+   */
+  'identity.rehomed': z.strictObject({ identityId: id, fromTenantId: id, toTenantId: id, previousPersonalGroupId: id.nullable(), personalGroupId: id.nullable() }),
+  'legal-hold.placed': z.strictObject({ holdId: id, subjectKind: z.enum(LEGAL_HOLD_SUBJECT_KINDS), subjectId: id, reasonCode: reasonCodeSchema, endsAt: instantSchema, changeId: id }),
+  'legal-hold.ended': z.strictObject({ holdId: id, subjectKind: z.enum(LEGAL_HOLD_SUBJECT_KINDS), subjectId: id, endedHow: z.enum(['expired', 'released']), changeId: id.nullable() }),
+  /** One maintenance run's deletions under the retention schedules: counts only. */
+  'identity.retention-applied': z.strictObject({ counts: retentionCountsSchema }),
   'approval.requested': z.strictObject({
     changeId: id,
     changeType: z.enum(GOVERNANCE_CHANGE_TYPES as [GovernanceChangeType, ...GovernanceChangeType[]]),
@@ -73,7 +103,7 @@ const payloads = {
 export type IdentityEventType = keyof typeof payloads
 export const IDENTITY_EVENT_TYPES = Object.freeze(Object.keys(payloads) as IdentityEventType[])
 
-export const IDENTITY_AGGREGATE_TYPES = ['identity', 'membership', 'group', 'invitation', 'join-request', 'tenant', 'approval', 'break-glass-review'] as const
+export const IDENTITY_AGGREGATE_TYPES = ['identity', 'membership', 'group', 'invitation', 'join-request', 'tenant', 'approval', 'break-glass-review', 'legal-hold', 'retention'] as const
 
 const envelope = {
   /** UUIDv7; consumers are idempotent by it. */
@@ -124,6 +154,9 @@ export const PROFILE_CONSUMED_EVENT_TYPES = Object.freeze([
   'membership.reinstated',
   'membership.ended',
   'group.settings-changed',
+  'group.deleted',
+  'group.disposal-due',
+  'identity.rehomed',
 ] as const satisfies readonly IdentityEventType[])
 
 /** Events that must reach Authentication: it revokes sessions or discards a never-confirmed account. */

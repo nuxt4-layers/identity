@@ -19,7 +19,7 @@ export const MEMBERSHIP_STATES = ['active', 'paused', 'suspended', 'ended'] as c
 export type MembershipState = typeof MEMBERSHIP_STATES[number]
 
 /** Why a membership ended. A removal also records a reason code. */
-export const MEMBERSHIP_END_REASONS = ['left', 'removed', 'expired', 'identity-closed', 'group-archived'] as const
+export const MEMBERSHIP_END_REASONS = ['left', 'removed', 'expired', 'identity-closed', 'group-archived', 'group-deleted'] as const
 export type MembershipEndReason = typeof MEMBERSHIP_END_REASONS[number]
 
 export const membershipSchema = z.strictObject({

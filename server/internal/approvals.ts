@@ -17,6 +17,7 @@ import {
   GOVERNANCE_CHANGES,
   IDENTITY_RISK_LEVELS,
   IdentityError,
+  LEGAL_HOLD_MAX_DAYS,
   STEP_UP_REQUIREMENTS,
   approvalRequirement,
   checkSafeName,
@@ -74,6 +75,12 @@ interface Located {
   governing: GroupDescription
   /** Further groups the requester must hold the permission on (a new parent). */
   alsoAuthoriseOn: string[]
+  /**
+   * Instead of the governing group: groups the requester may hold the
+   * permission on, any one sufficing (a tenant's shutdown, requested in the
+   * platform group or in one of the tenant's root groups).
+   */
+  authoriseOnAnyOf?: string[]
   beneficiaryId: string | null
   createdId: string | null
   internal: Record<string, unknown>
@@ -130,6 +137,36 @@ export function createApprovals({ db, access, approvalPolicy, policy, clock = sy
     const decision = await port(() => access.decide({ subject, permission, groupId, correlationId }), 'access decision')
     if (decision.allowed) return
     throw new IdentityError(decision.reason === 'insufficient-assurance' ? 'insufficient-assurance' : 'forbidden')
+  }
+
+  /** The permission on any one of `groupIds`. Insufficient assurance on one is reported only when none allows. */
+  async function authoriseAny(subject: IdentitySubject, permission: IdentityPermissionName, groupIds: readonly string[], correlationId: string): Promise<void> {
+    let stepUp = false
+    for (const groupId of groupIds) {
+      const decision = await port(() => access.decide({ subject, permission, groupId, correlationId }), 'access decision')
+      if (decision.allowed) return
+      if (decision.reason === 'insufficient-assurance') stepUp = true
+    }
+    throw new IdentityError(stepUp ? 'insufficient-assurance' : 'forbidden')
+  }
+
+  interface TenantFacts { tenantId: string, state: 'active' | 'closing' | 'closed', closesAt: string | null, rootGroupIds: string[] }
+
+  async function tenantFacts(tenantId: string): Promise<TenantFacts | null> {
+    const { rows } = await db.transaction(client => client.query<{ result: TenantFacts | null }>(`select ${db.schema}.tenant_facts($1) as result`, [tenantId]))
+    return rows[0]?.result ?? null
+  }
+
+  interface DeletionFacts { state: string, kind: string, parentGroupId: string | null, archivedAt: string | null, liveChildren: boolean }
+
+  async function deletionFacts(groupId: string): Promise<DeletionFacts | null> {
+    const { rows } = await db.transaction(client => client.query<{ result: DeletionFacts | null }>(`select ${db.schema}.deletion_facts($1) as result`, [groupId]))
+    return rows[0]?.result ?? null
+  }
+
+  async function disposalDue(kind: 'group' | 'tenant', id: string): Promise<boolean> {
+    const { rows } = await db.transaction(client => client.query<{ result: { state: string } | null }>(`select ${db.schema}.get_disposal($1, $2) as result`, [kind, id]))
+    return rows[0]?.result?.state === 'due'
   }
 
   async function signInState(client: QueryClient, identityId: string): Promise<{ kind: string, state: string } | null> {
@@ -340,6 +377,91 @@ export function createApprovals({ db, access, approvalPolicy, policy, clock = sy
       }
       case 'group.appoint-owner':
         throw new IdentityError('validation-failed', 'recovery is requested through its own path')
+      case 'group.delete': {
+        const governing = await standardGroup(request.target.groupId)
+        const { publishedDelayCriticalHours } = await safetyPeriodsFor(db, policy, governing.groupId)
+        return {
+          governing,
+          alsoAuthoriseOn: [],
+          beneficiaryId: null,
+          createdId: null,
+          // Kept with the change and in its digest: the group must have been archived this long when it applies.
+          internal: { platformGroupId: policy.platformGroupId, archivedForHours: publishedDelayCriticalHours },
+          check: async () => {
+            const facts = await deletionFacts(governing.groupId)
+            if (!facts || facts.state !== 'archived') return 'only an archived group can be deleted'
+            if (facts.parentGroupId === null) return 'a root group is deleted only when its tenant closes'
+            if (governing.groupId === policy.platformGroupId) return 'the platform group cannot be deleted'
+            if (facts.liveChildren) return 'delete its child groups first'
+            if (!facts.archivedAt || Date.parse(facts.archivedAt) + publishedDelayCriticalHours * 3_600_000 > clock.now().getTime()) {
+              return 'the group has not been archived for long enough'
+            }
+            return null
+          },
+        }
+      }
+      case 'tenant.close':
+      case 'tenant.cancel-closing': {
+        const governing = await platformGroup()
+        const tenant = await tenantFacts(request.target.tenantId)
+        if (!tenant) throw new IdentityError('forbidden')
+        const periods = await safetyPeriodsFor(db, policy, governing.groupId)
+        const closing = request.type === 'tenant.close'
+        return {
+          governing,
+          alsoAuthoriseOn: [],
+          // The tenant's own owners may ask for its shutdown; only the platform's operators cancel one.
+          authoriseOnAnyOf: closing ? [governing.groupId, ...tenant.rootGroupIds] : [governing.groupId],
+          beneficiaryId: null,
+          createdId: null,
+          internal: closing
+            ? { platformTenantId: governing.tenantId, defaultHomeTenantId: policy.defaultHomeTenantId, noticeDays: periods.tenantClosingNoticeDays }
+            : {},
+          check: async () => {
+            if (!closing) return tenant.state === 'closing' ? null : 'tenant is not closing'
+            if (tenant.state !== 'active') return 'tenant is not active'
+            if (tenant.tenantId === governing.tenantId) return 'the platform group\'s tenant cannot be closed'
+            if (!policy.defaultHomeTenantId) return 'no default home tenant is configured'
+            if (tenant.tenantId === policy.defaultHomeTenantId) return 'name another default home tenant first'
+            if ((await tenantFacts(policy.defaultHomeTenantId))?.state !== 'active') return 'the default home tenant is not active'
+            return null
+          },
+        }
+      }
+      case 'legal-hold.place': {
+        const governing = await platformGroup()
+        const { subjectKind, subjectId, endsAt } = request.target
+        const exists = subjectKind === 'group' ? (await deletionFacts(subjectId)) !== null : (await tenantFacts(subjectId)) !== null
+        if (!exists) throw new IdentityError('forbidden')
+        return {
+          governing,
+          alsoAuthoriseOn: [],
+          beneficiaryId: null,
+          createdId: await newIdentifier(),
+          internal: {},
+          check: async () => {
+            const ends = Date.parse(endsAt)
+            const now = clock.now().getTime()
+            if (!(ends > now) || ends > now + LEGAL_HOLD_MAX_DAYS * 86_400_000) return 'a hold ends after now and within seven years'
+            if (await disposalDue(subjectKind, subjectId)) return 'disposal has already started'
+            return null
+          },
+        }
+      }
+      case 'legal-hold.release': {
+        const governing = await platformGroup()
+        const { rows } = await db.transaction(client => client.query<{ result: { state: string } | null }>(`select ${db.schema}.get_legal_hold($1) as result`, [request.target.holdId]))
+        const hold = rows[0]?.result
+        if (!hold) throw new IdentityError('forbidden')
+        return {
+          governing,
+          alsoAuthoriseOn: [],
+          beneficiaryId: null,
+          createdId: null,
+          internal: {},
+          check: async () => (hold.state === 'active' ? null : 'the hold has ended'),
+        }
+      }
       case 'identity.suspend':
       case 'identity.reinstate': {
         const governing = await platformGroup()
@@ -496,7 +618,8 @@ export function createApprovals({ db, access, approvalPolicy, policy, clock = sy
       if (request.type === 'group.appoint-owner') return recover(subject, request, correlationId)
       const located = await locate(request, subject.principalId)
       const permission = GOVERNANCE_CHANGES[request.type].permission
-      await authorise(subject, permission, located.governing.groupId, correlationId)
+      if (located.authoriseOnAnyOf) await authoriseAny(subject, permission, located.authoriseOnAnyOf, correlationId)
+      else await authorise(subject, permission, located.governing.groupId, correlationId)
       for (const groupId of located.alsoAuthoriseOn) await authorise(subject, permission, groupId, correlationId)
       await requireActivePerson(subject)
 
@@ -572,6 +695,13 @@ export function createApprovals({ db, access, approvalPolicy, policy, clock = sy
       const refusal = refuseApproval({ change, approverId: subject.principalId, qualifies: true, controlledByRequester: false, assurance, changeDigest: digest, now })
       if (refusal === 'insufficient-assurance') throw new IdentityError('insufficient-assurance')
       if (refusal) throw new IdentityError('conflict', refusal)
+      // A tenant's shutdown is never approved by its own owners; checked again when it applies.
+      if (change.type === 'tenant.close' && input.decision === 'approve' && 'tenantId' in change.target) {
+        const tenant = await tenantFacts(change.target.tenantId)
+        for (const rootGroupId of tenant?.rootGroupIds ?? []) {
+          if (await isOwner(subject.principalId, rootGroupId)) throw new IdentityError('conflict', 'an owner of the tenant cannot approve its shutdown')
+        }
+      }
       const { rows } = await db.transaction(
         client => client.query<{ result: unknown }>(
           `select ${db.schema}.record_decision($1, $2, $3, $4::jsonb, $5, $6) as result`,

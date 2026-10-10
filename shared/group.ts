@@ -22,6 +22,7 @@ export const GROUP_KINDS = ['personal', 'standard'] as const
 export type GroupKind = typeof GROUP_KINDS[number]
 
 /**
+ * The states of a live group, as ports describe it:
  * - `active` — at least one active owner.
  * - `orphaned` — no active owner; governed only through recovery.
  * - `archived` — read-only; no new memberships.
@@ -29,6 +30,17 @@ export type GroupKind = typeof GROUP_KINDS[number]
  */
 export const GROUP_STATES = ['active', 'orphaned', 'archived'] as const
 export type GroupState = typeof GROUP_STATES[number]
+
+/**
+ * Every state a group record can be in: a live group's, or `deleted`, the
+ * terminal state of iam-integration's group deletion. A deleted group
+ * confers nothing and no port describes it; once its disposal is due,
+ * Identity keeps only a tombstone (identifier, tenant, kind, parent and
+ * dates), so that its identifier is never reused and records naming it still
+ * resolve.
+ */
+export const GROUP_RECORD_STATES = [...GROUP_STATES, 'deleted'] as const
+export type GroupRecordState = typeof GROUP_RECORD_STATES[number]
 
 // ---------------------------------------------------------------------------
 // Departure data policy (ADR-0005 §2.7; iam-integration joining and leaving)
@@ -153,17 +165,18 @@ export const groupSchema = z.strictObject({
   /** A safe name. Null for a personal group, which Profile presents by its person. */
   name: storedSafeNameSchema.nullable(),
   externalId: externalIdSchema.nullable(),
-  state: z.enum(GROUP_STATES),
+  state: z.enum(GROUP_RECORD_STATES),
   /** Null for a personal group: its person is sovereign and needs no settings. */
   settings: groupSettingsSchema.nullable(),
   createdAt: instantSchema,
   version: versionSchema,
 }).superRefine((group, context) => {
   const personal = group.kind === 'personal'
-  if (personal && (group.parentGroupId !== null || group.name !== null || group.settings !== null || group.state !== 'active')) {
-    context.addIssue({ code: 'custom', message: 'A personal group has no parent, name or settings, and is always active' })
+  const deleted = group.state === 'deleted'
+  if (personal && (group.parentGroupId !== null || group.name !== null || group.settings !== null || !(group.state === 'active' || deleted))) {
+    context.addIssue({ code: 'custom', message: 'A personal group has no parent, name or settings, and is active until it is deleted' })
   }
-  if (!personal && (group.name === null || group.settings === null)) {
+  if (!personal && !deleted && (group.name === null || group.settings === null)) {
     context.addIssue({ code: 'custom', message: 'A standard group has a name and settings' })
   }
 })

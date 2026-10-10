@@ -169,10 +169,13 @@ describe.skipIf(!hasDatabase)('lifecycle, recovery and break-glass on PostgreSQL
       await events()
       offset = 31 * DAY
       expect((await runMaintenance(db, clock)).closedIdentities).toBe(1)
-      const published = await events()
-      expect(published.map(event => event.type)).toEqual(['membership.ended', 'identity.closed'])
+      // Retention may also announce what the month's maintenance deleted; that is not the closure's.
+      const published = (await events()).filter(event => event.type !== 'identity.retention-applied')
+      // The personal group goes with the identity (iam-integration account closure step 9).
+      expect(published.map(event => event.type)).toEqual(['membership.ended', 'group.deleted', 'identity.closed'])
       expect(published[0]).toMatchObject({ actorId: null, data: { membershipId, endReason: 'identity-closed' } })
-      expect(published[1]).toMatchObject({ data: { identityId: leaver } })
+      expect(published[1]).toMatchObject({ data: { kind: 'personal', disposal: 'due', changeId: null } })
+      expect(published[2]).toMatchObject({ data: { identityId: leaver, personalGroupId: published[1]!.data.groupId } })
       expect(await identityState(leaver)).toEqual({ state: 'closed', previous_state: null })
       const { rows } = await test.admin.query('select state from identity.invitation where invitation_id = $1', [invitation.invitationId])
       expect(rows[0].state).toBe('revoked')

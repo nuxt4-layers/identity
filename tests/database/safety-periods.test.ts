@@ -194,6 +194,7 @@ describe.skipIf(!hasDatabase)('safety periods on PostgreSQL', () => {
         orphanRecoveryDelayDays: 14,
         recoveryHoldHours: 100,
         closureGraceDays: 30,
+        tenantClosingNoticeDays: 30,
       },
       isPlatformGroup: false,
     })

@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
-import type { IdentityEventPublisher, IdentityPolicy } from '../../contracts'
-import { checkSafeName, confusableSkeleton, DEFAULT_GROUP_SETTINGS, identityEventSchema, IdentityError, identifierSchema, registryCodeSchema, externalIdSchema } from '../../contracts'
+import type { IdentityEventPublisher, IdentityPolicy, RetentionCounts } from '../../contracts'
+import { checkSafeName, confusableSkeleton, DEFAULT_GROUP_SETTINGS, DEFAULT_IDENTITY_POLICY, identityEventSchema, IdentityError, identifierSchema, registryCodeSchema, externalIdSchema } from '../../contracts'
 import type { Database } from './database'
 import type { Clock } from './provisioning'
 import { systemClock } from './provisioning'
@@ -66,7 +66,23 @@ export interface MaintenanceResult {
   expiredJoinRequests: number
   /** Identities closed at the end of their grace period. */
   closedIdentities: number
+  /** Legal holds on groups and tenants that reached their end date. */
+  endedLegalHolds: number
+  /** Deferred disposals that fell due because no hold covers them any more. */
+  disposalsDue: number
+  /** Tenants closed at the end of their notice period. */
+  closedTenants: number
+  /** Tenants past their notice period that could not close yet (no active default home tenant). */
+  blockedTenants: number
+  /** Disposals raised to operators because a member has not confirmed within 7 days. */
+  overdueDisposals: number
+  /** Records deleted under the retention schedules, by kind. */
+  retention: RetentionCounts
 }
+
+/** What maintenance needs from the policy: who re-homes people and confirms disposals, and the retention schedules. */
+export type MaintenancePolicy = Pick<IdentityPolicy, 'approvalExpiryDays' | 'defaultHomeTenantId' | 'disposalParticipants'
+  | 'retentionOutboxDays' | 'retentionInvitationDays' | 'retentionJoinRequestDays' | 'retentionGovernanceChangeDays' | 'retentionBreakGlassReviewDays'>
 
 /**
  * Closes `pending` identities whose confirmation window has ended, records
@@ -77,7 +93,8 @@ export interface MaintenanceResult {
  * identities at the end of their closure grace period. Access already treats lapsed identities and memberships as over;
  * this records it and announces it.
  */
-export async function runMaintenance(db: Database, clock: Clock = systemClock, limit = 500, confirmationDays = 7): Promise<MaintenanceResult> {
+export async function runMaintenance(db: Database, clock: Clock = systemClock, limit = 500, policy: MaintenancePolicy = DEFAULT_IDENTITY_POLICY): Promise<MaintenanceResult> {
+  const confirmationDays = policy.approvalExpiryDays
   const correlationId = randomUUID()
   const now = clock.now()
   const { rows } = await db.transaction(client => client.query<{
@@ -93,6 +110,21 @@ export async function runMaintenance(db: Database, clock: Clock = systemClock, l
     [correlationId, now, limit, confirmationDays],
   ))
   const row = rows[0]!
+  // End of life after the rest, so that closures and expiries this run are already recorded.
+  const { rows: end } = await db.transaction(client => client.query<{
+    life: { holdsEnded: number, disposalsDue: number, tenantsClosed: number, tenantsBlocked: number, disposalsOverdue: number }
+    retention: RetentionCounts
+  }>(
+    `select ${db.schema}.run_end_of_life($1, $2, $3, $4, $5::text[]) as life, ${db.schema}.apply_retention($1, $2, $6::jsonb) as retention`,
+    [correlationId, now, limit, policy.defaultHomeTenantId, [...policy.disposalParticipants], JSON.stringify({
+      retentionOutboxDays: policy.retentionOutboxDays,
+      retentionInvitationDays: policy.retentionInvitationDays,
+      retentionJoinRequestDays: policy.retentionJoinRequestDays,
+      retentionGovernanceChangeDays: policy.retentionGovernanceChangeDays,
+      retentionBreakGlassReviewDays: policy.retentionBreakGlassReviewDays,
+    })],
+  ))
+  const life = end[0]!.life
   return {
     expiredPendingIdentities: row.expired,
     endedLapsedMemberships: row.swept,
@@ -102,6 +134,12 @@ export async function runMaintenance(db: Database, clock: Clock = systemClock, l
     expiredInvitations: row.joining.invitations,
     expiredJoinRequests: row.joining.joinRequests,
     closedIdentities: row.closed,
+    endedLegalHolds: life.holdsEnded,
+    disposalsDue: life.disposalsDue,
+    closedTenants: life.tenantsClosed,
+    blockedTenants: life.tenantsBlocked,
+    overdueDisposals: life.disposalsOverdue,
+    retention: end[0]!.retention,
   }
 }
 

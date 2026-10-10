@@ -97,6 +97,8 @@ Other members import types only from `@nuxt4-layers/identity/contracts`, and dir
 
 Schedule `runIdentityMaintenance()` and `relayIdentityOutbox()` with any scheduler; see `playground/server/tasks/identity/maintenance.ts`.
 
+End of life (iam-integration's group deletion, tenant lifecycle and retention): deleting a group, shutting a tenant and legal holds on groups and tenants are approved changes through `getIdentityApprovals()`; maintenance applies them over time and the retention schedules. List the members that dispose of a deleted group's information in `provideIdentityPolicy({ disposalParticipants: ['authorisation', 'profile'] })` and relay their confirmations to `recordIdentityDisposal()`; the other members ask `identityLegalHoldCovers()` before deleting anything; `exportIdentityTenantData()` is a closing tenant's governance export.
+
 ## Development
 
 ```sh

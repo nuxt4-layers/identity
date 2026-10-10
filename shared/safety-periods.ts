@@ -28,12 +28,17 @@ export const SAFETY_PERIOD_SETTINGS = [
   'orphanRecoveryDelayDays',
   'recoveryHoldHours',
   'closureGraceDays',
+  'tenantClosingNoticeDays',
 ] as const
 
 export type SafetyPeriodSetting = typeof SAFETY_PERIOD_SETTINGS[number]
 
-/** Settings only the platform group sets: they belong to a person, not to a group. */
-export const PLATFORM_ONLY_SAFETY_PERIODS: readonly SafetyPeriodSetting[] = Object.freeze(['closureGraceDays'])
+/**
+ * Settings only the platform group sets: the closure grace period belongs to
+ * a person, and the tenant closing notice to a shutdown the platform's
+ * operators approved, not to any group.
+ */
+export const PLATFORM_ONLY_SAFETY_PERIODS: readonly SafetyPeriodSetting[] = Object.freeze(['closureGraceDays', 'tenantClosingNoticeDays'])
 
 /** Hours in one unit of each setting, to compare waits. */
 const HOURS_PER_UNIT: Readonly<Record<SafetyPeriodSetting, number>> = Object.freeze({
@@ -43,6 +48,7 @@ const HOURS_PER_UNIT: Readonly<Record<SafetyPeriodSetting, number>> = Object.fre
   orphanRecoveryDelayDays: 24,
   recoveryHoldHours: 1,
   closureGraceDays: 24,
+  tenantClosingNoticeDays: 24,
 })
 
 /** What one level sets. A missing setting defers to the level above. */
