@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto'
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest'
 import type { IdentityAccessDecision, IdentityApprovalPolicy, IdentityEvent, IdentityPolicyInput, IdentitySubject, PendingChange } from '../../contracts'
 import { identityPermissionRisk, resolveIdentityPolicy } from '../../contracts'
@@ -285,6 +286,9 @@ describe.skipIf(!hasDatabase)('end of life on PostgreSQL', () => {
       expect(await recordDisposal(db, { subject: { kind: 'group', id: groupId }, member: 'authorisation', eventId, correlationId: CORRELATION_ID }, clock)).toEqual({ recorded: true })
       expect(await recordDisposal(db, { subject: { kind: 'group', id: groupId }, member: 'authorisation', eventId, correlationId: CORRELATION_ID }, clock)).toEqual({ recorded: true })
       await expect(recordDisposal(db, { subject: { kind: 'group', id: groupId }, member: 'Not A Member', eventId, correlationId: CORRELATION_ID }, clock)).rejects.toMatchObject({ code: 'validation-failed' })
+      // Each member issues its own event identifiers: Authorisation's are version 4 UUIDs.
+      expect(await recordDisposal(db, { subject: { kind: 'group', id: groupId }, member: 'authorisation', eventId: randomUUID(), correlationId: CORRELATION_ID }, clock)).toEqual({ recorded: true })
+      await expect(recordDisposal(db, { subject: { kind: 'group', id: groupId }, member: 'authorisation', eventId: 'not-a-uuid', correlationId: CORRELATION_ID }, clock)).rejects.toMatchObject({ code: 'validation-failed' })
       await events()
 
       // Other tests' disposals share the database, so look only at this group's.
