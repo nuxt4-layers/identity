@@ -199,6 +199,26 @@ describe.skipIf(!hasDatabase)('the /api/identity endpoints', () => {
       .toEqual({ status: 409, data: { code: 'conflict', messageKey: 'identity.error.conflict', reason: 'last-owner' } })
   })
 
+  it('names the groups a person has left on their own view, and only those', async () => {
+    const creator = await person()
+    allow(creator, 'identity.groups:create', root)
+    const name = `Former ${uuidv7().slice(-6)}`
+    const { data: { groupId } } = await call('POST', '/api/identity/groups', { as: creator, body: { parentGroupId: root, name } })
+    const leaver = await person()
+    const membershipId = uuidv7()
+    await seed(test.admin, [[`insert into identity.membership values ($1, $2, $3, $4, 'member', 'active', false, false, now() - interval '1 day', null, null, null, null, now(), 1)`, [membershipId, leaver, groupId, tenant]]])
+    const before = (await call('GET', '/api/identity/me', { as: leaver })).data
+    expect(before.groupNames).toContainEqual({ groupId, name })
+    expect(before.formerGroupNames).toEqual([])
+
+    expect((await call('POST', `/api/identity/memberships/${membershipId}/leave`, { as: leaver })).status).toBe(200)
+    const after = (await call('GET', '/api/identity/me', { as: leaver })).data
+    expect(after.groupNames.map((entry: { groupId: string }) => entry.groupId)).not.toContain(groupId)
+    expect(after.formerGroupNames).toEqual([{ groupId, name }])
+    // A group the person is still in is never "former", and nobody else's departures are shown.
+    expect((await call('GET', '/api/identity/me', { as: creator })).data.formerGroupNames).toEqual([])
+  })
+
   it('accepts an invitation with the token in the body, answering alike whatever happened', async () => {
     const inviter = await person()
     allow(inviter, 'identity.groups:create', root)

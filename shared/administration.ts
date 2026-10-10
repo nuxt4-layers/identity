@@ -46,6 +46,13 @@ export const selfViewSchema = z.strictObject({
    * or the ports other members use.
    */
   groupNames: z.array(z.strictObject({ groupId: identifierSchema, name: storedSafeNameSchema })).max(1000),
+  /**
+   * The current names of the standard groups the person has left (every
+   * membership ended), for their own pages: Profile's page to choose
+   * anonymity in one group already left shows them through the host. The
+   * person was a member, so they knew the name.
+   */
+  formerGroupNames: z.array(z.strictObject({ groupId: identifierSchema, name: storedSafeNameSchema })).max(1000),
   /** Groups of which this identity is the last active owner (pausing orphans them; closure needs a decision). */
   lastOwnerOf: z.array(identifierSchema).max(1000),
 })

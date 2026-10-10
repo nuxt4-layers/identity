@@ -2410,6 +2410,33 @@ revoke all on all functions in schema {{schema}} from public;
 grant execute on function {{schema}}.safety_periods_of(uuid, uuid), {{schema}}.safety_periods_valid(jsonb), {{schema}}.safety_rule(text) to {{runtime}};
 `,
   },
+  {
+    id: '0008_former_group_names',
+    sql: `
+-- The groups a person has left, named for their own pages (docs/contracts.md
+-- §19): Profile's page to choose anonymity in one group already left needs
+-- them. Only standard groups where every membership of the identity has
+-- ended; the person was a member, so they knew the name. SECURITY DEFINER
+-- because the memberships span tenants; the layer passes the signed-in
+-- identity only.
+create function {{schema}}.former_group_names(p_identity uuid)
+returns jsonb language sql stable security definer set search_path = pg_catalog, pg_temp as $$
+  select coalesce(jsonb_agg(jsonb_build_object('groupId', former.group_id, 'name', former.name) order by former.name, former.group_id), '[]'::jsonb)
+  from (
+    select g.group_id, g.name
+    from {{schema}}."group" g
+    where g.kind = 'standard'
+      and exists (select 1 from {{schema}}.membership m where m.group_id = g.group_id and m.identity_id = p_identity and m.state = 'ended')
+      and not exists (select 1 from {{schema}}.membership m where m.group_id = g.group_id and m.identity_id = p_identity and m.state <> 'ended')
+    order by g.name, g.group_id
+    limit 1000
+  ) former
+$$;
+
+revoke all on function {{schema}}.former_group_names(uuid) from public;
+grant execute on function {{schema}}.former_group_names(uuid) to {{runtime}};
+`,
+  },
 ]
 
 const IDENTIFIER_PATTERN = /^[a-z_][a-z0-9_]{0,62}$/

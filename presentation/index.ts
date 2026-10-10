@@ -9,4 +9,5 @@
 
 export type { IdentityMessageKey, IdentityMessages } from './messages'
 export { formatMessage, IDENTITY_MESSAGES_EN_GB, resolveMessage } from './messages'
-export { DELIBERATE_PAIRINGS, identityClasses } from './utils/identity-classes'
+export { DELIBERATE_PAIRINGS } from './pairings'
+export { identityClasses } from './utils/identity-classes'

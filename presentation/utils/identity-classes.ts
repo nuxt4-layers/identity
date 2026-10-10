@@ -7,7 +7,7 @@
  * Fill, Pen and Edge of one surface or control share a role and a state, and
  * advance together (hover, active and disabled). Text and borders without a
  * fill of their own sit on the card (fill-base-default). The only exceptions
- * are DELIBERATE_PAIRINGS below, each also listed in docs/contracts.md (§20);
+ * are DELIBERATE_PAIRINGS (presentation/pairings.ts), each also listed in docs/contracts.md (§20);
  * tests/presentation.test.ts enforces both.
  */
 
@@ -53,16 +53,3 @@ export const identityClasses = {
   definition: 'text-base text-pen-base-default sm:col-span-2',
   code: 'font-mono text-sm break-all text-pen-base-default',
 } as const
-
-/**
- * Pen or Edge tokens drawn on a fill of another role or state, each because
- * the meaning requires it. A host's theme must keep these legible.
- */
-export const DELIBERATE_PAIRINGS = [
-  // Secondary text (hints, notes, definition terms) on the card.
-  { token: 'pen-muted-default', on: 'fill-base-default' },
-  // An invalid field's border.
-  { token: 'edge-error-default', on: 'fill-input-default' },
-  // The focus indicator around controls on the card.
-  { token: 'edge-base-active', on: 'fill-base-default' },
-] as const
