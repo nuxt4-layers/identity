@@ -1,4 +1,4 @@
-import type { IdentityAccessGovernance, IdentityDirectory, IdentityDisclosureContextPort, IdentityProvisioning, PostgresPoolLike } from '../../contracts'
+import type { Disposal, IdentityAccessGovernance, IdentityDirectory, IdentityDisclosureContextPort, IdentityProvisioning, IdentitySubject, LegalHoldSubjectKind, PostgresPoolLike, TenantGovernanceExport } from '../../contracts'
 import { runIdentityMigrations } from '../database/migrations'
 import { createAccessGovernance } from '../internal/access-governance'
 import type { Approvals } from '../internal/approvals'
@@ -6,6 +6,7 @@ import { createApprovals } from '../internal/approvals'
 import type { MaintenanceResult, RelayResult } from '../internal/background'
 import { bootstrapRootGroup, provisionBreakGlass, provisionTenant, relayOutbox, runMaintenance } from '../internal/background'
 import type { BreakGlass } from '../internal/break-glass'
+import { createTenantExport, legalHoldCovers, readDisposal, recordDisposal } from '../internal/end-of-life'
 import { createBreakGlass } from '../internal/break-glass'
 import { database } from '../internal/database'
 import { createDirectory } from '../internal/directory'
@@ -177,7 +178,45 @@ export function relayIdentityOutbox(input: { limit?: number } = {}): Promise<Rel
  */
 export function runIdentityMaintenance(): Promise<MaintenanceResult> {
   const { db, clock } = runtime()
-  return runMaintenance(db, clock, undefined, useIdentityPolicy().approvalExpiryDays)
+  return runMaintenance(db, clock, undefined, useIdentityPolicy())
+}
+
+/**
+ * Whether a legal hold covers a group (directly or through its tenant) or a
+ * tenant now (iam-integration group deletion). Server-only: the other
+ * members' retention and disposal ask it through the host's adapter before
+ * deleting anything a hold might cover.
+ */
+export function identityLegalHoldCovers(subject: { kind: LegalHoldSubjectKind, id: string }): Promise<boolean> {
+  const { db, clock } = runtime()
+  return legalHoldCovers(db, subject, clock)
+}
+
+/**
+ * Records a member's confirmation that it has disposed of its part of a
+ * deleted group or closed tenant, from its `<member>.group-disposed` or
+ * `<member>.tenant-disposed` event, relayed by the host. Idempotent.
+ * Server-only.
+ */
+export function recordIdentityDisposal(input: { subject: { kind: LegalHoldSubjectKind, id: string }, member: string, eventId: string, correlationId: string }): Promise<{ recorded: boolean }> {
+  const { db, clock } = runtime()
+  return recordDisposal(db, input, clock)
+}
+
+/** A disposal and the members that have confirmed it, for operators' tooling. Server-only. */
+export function getIdentityDisposal(subject: { kind: LegalHoldSubjectKind, id: string }): Promise<Disposal | null> {
+  return readDisposal(runtime().db, subject)
+}
+
+/**
+ * A closing tenant's governance records (iam-integration tenant lifecycle),
+ * for an owner of one of its root groups, authorised through the
+ * access-decision port (`identity.tenants:export`, at `aal2`). The host's
+ * export endpoint composes it with Authorisation's part through
+ * iam-integration's adapter.
+ */
+export function exportIdentityTenantData(input: { subject: IdentitySubject, tenantId: string, correlationId: string }): Promise<TenantGovernanceExport> {
+  return createTenantExport({ ...runtime(), access: useIdentityAccessDecision(), policy: useIdentityPolicy() }).exportTenant(input)
 }
 
 interface OperatorConnection {

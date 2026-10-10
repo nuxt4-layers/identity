@@ -44,6 +44,23 @@ export const IDENTITY_POLICY_BOUNDS = Object.freeze({
   invitationsPerGroupPerDay: { default: 200, min: 1, max: 5000, saferWhen: 'shorter' },
   /** Invitation acceptance attempts per identity per hour. */
   acceptanceAttemptsPerHour: { default: 20, min: 1, max: 100, saferWhen: 'shorter' },
+  /** Notice between a tenant's shutdown being approved and its closing (tenant lifecycle). Platform only. */
+  tenantClosingNoticeDays: { default: 30, min: 30, max: 180, saferWhen: 'longer' },
+  /**
+   * Retention (iam-integration `docs/processes/retention.md`): how long each
+   * kind of record is kept once its purpose is over. Shorter than the
+   * default needs a risk treatment, as for any loosening.
+   */
+  /** Outbox events, from delivery. */
+  retentionOutboxDays: { default: 30, min: 7, max: 365, saferWhen: 'longer' },
+  /** Invitations and acceptance attempts, from use, refusal, revocation or expiry. */
+  retentionInvitationDays: { default: 90, min: 14, max: 365, saferWhen: 'longer' },
+  /** Join requests, from decision, withdrawal or expiry. */
+  retentionJoinRequestDays: { default: 365, min: 30, max: 2555, saferWhen: 'longer' },
+  /** Governance changes, from decision, withdrawal or expiry. */
+  retentionGovernanceChangeDays: { default: 730, min: 365, max: 2555, saferWhen: 'longer' },
+  /** Break-glass reviews, from closure of the review. */
+  retentionBreakGlassReviewDays: { default: 2555, min: 730, max: 2555, saferWhen: 'longer' },
 } as const satisfies Record<string, Bounded>)
 
 export type IdentityPolicySetting = keyof typeof IDENTITY_POLICY_BOUNDS
@@ -64,6 +81,14 @@ export interface IdentityPolicy extends IdentityPolicyPeriods {
    * approved there. Null: those changes are refused.
    */
   platformGroupId: string | null
+  /**
+   * The members and domain capabilities that dispose of a deleted group's or
+   * closed tenant's information and confirm it (iam-integration group
+   * deletion), by the prefix of their events: for example `authorisation`
+   * and `profile`. Identity raises a disposal not confirmed by every one of
+   * them within 7 days. Identity confirms its own part itself.
+   */
+  disposalParticipants: readonly string[]
   /** Reference to the documented risk treatment for any loosening, or null. */
   riskTreatment: string | null
 }
@@ -78,6 +103,7 @@ export const DEFAULT_IDENTITY_POLICY: IdentityPolicy = Object.freeze({
   dataRegions: Object.freeze(['uk']),
   defaultHomeTenantId: null,
   platformGroupId: null,
+  disposalParticipants: Object.freeze([]),
   riskTreatment: null,
 })
 
@@ -91,6 +117,7 @@ export const identityPolicyInputSchema = z.strictObject({
   dataRegions: z.array(registryCodeSchema).min(1).max(64).optional(),
   defaultHomeTenantId: identifierSchema.nullable().optional(),
   platformGroupId: identifierSchema.nullable().optional(),
+  disposalParticipants: z.array(registryCodeSchema).max(32).refine(list => new Set(list).size === list.length && !list.includes('identity'), 'Each participant once, and never identity itself').optional(),
   riskTreatment: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._:/#-]{0,63}$/).nullable().optional(),
 })
 
@@ -118,5 +145,10 @@ export function resolveIdentityPolicy(input: IdentityPolicyInput = {}): Identity
   if (loosened.length > 0 && !policy.riskTreatment) {
     throw new TypeError(`Identity policy loosens ${loosened.join(', ')} below the secure default without a riskTreatment reference.`)
   }
-  return Object.freeze({ ...policy, jurisdictions: Object.freeze([...policy.jurisdictions]), dataRegions: Object.freeze([...policy.dataRegions]) })
+  return Object.freeze({
+    ...policy,
+    jurisdictions: Object.freeze([...policy.jurisdictions]),
+    dataRegions: Object.freeze([...policy.dataRegions]),
+    disposalParticipants: Object.freeze([...policy.disposalParticipants]),
+  })
 }

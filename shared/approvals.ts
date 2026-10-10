@@ -54,6 +54,11 @@ export const GOVERNANCE_CHANGES = Object.freeze({
   'identity.suspend': { permission: 'identity.identities:suspend', confers: false },
   'identity.reinstate': { permission: 'identity.identities:suspend', confers: true },
   'service-identity.create': { permission: 'identity.service-identities:create', confers: false },
+  'group.delete': { permission: 'identity.groups:delete', confers: false },
+  'tenant.close': { permission: 'identity.tenants:close', confers: false },
+  'tenant.cancel-closing': { permission: 'identity.tenants:close', confers: false },
+  'legal-hold.place': { permission: 'identity.legal-holds:manage', confers: false },
+  'legal-hold.release': { permission: 'identity.legal-holds:manage', confers: false },
 } as const satisfies Record<string, { permission: IdentityPermissionName, confers: boolean }>)
 
 export type GovernanceChangeType = keyof typeof GOVERNANCE_CHANGES
@@ -81,6 +86,7 @@ export type PendingChangeState = typeof PENDING_CHANGE_STATES[number]
 const id = identifierSchema
 const onMembership = z.strictObject({ membershipId: id })
 const onIdentity = z.strictObject({ identityId: id })
+const onTenant = z.strictObject({ tenantId: id })
 
 /**
  * The target of each change: what a requester submits, and what approvers
@@ -123,6 +129,30 @@ export const GOVERNANCE_TARGETS = {
    * member may object to.
    */
   'group.appoint-owner': onMembership,
+  /**
+   * Deletes an archived group with no live child groups (iam-integration
+   * group deletion). Decided in the group, at `critical` risk; its
+   * information is disposed of in every member unless a legal hold covers
+   * it.
+   */
+  'group.delete': z.strictObject({ groupId: id }),
+  /**
+   * Shuts a tenant down after the platform's tenant closing notice
+   * (iam-integration tenant lifecycle). Requested by an owner of one of the
+   * tenant's root groups or a platform operator; always decided in the
+   * host's platform group, never by the tenant's own owners.
+   */
+  'tenant.close': onTenant,
+  /** Cancels a tenant's shutdown during its notice period. Decided in the platform group. */
+  'tenant.cancel-closing': onTenant,
+  /**
+   * A legal hold on a group or a tenant, until `endsAt` (at most
+   * `LEGAL_HOLD_MAX_DAYS` ahead), with the justification's reason code. It
+   * defers disposal, never deletion. Decided in the platform group.
+   */
+  'legal-hold.place': z.strictObject({ subjectKind: z.enum(['group', 'tenant']), subjectId: id, endsAt: instantSchema }),
+  /** Ends a legal hold before its end date. Decided in the platform group. */
+  'legal-hold.release': z.strictObject({ holdId: id }),
 } as const satisfies Partial<Record<GovernanceChangeType, z.ZodType>>
 
 export type RequestableChangeType = keyof typeof GOVERNANCE_TARGETS
@@ -159,6 +189,10 @@ export const governanceTargetSchema = z.union([
   onMembership,
   GOVERNANCE_TARGETS['membership.schedule'],
   onIdentity,
+  GOVERNANCE_TARGETS['group.delete'],
+  onTenant,
+  GOVERNANCE_TARGETS['legal-hold.place'],
+  GOVERNANCE_TARGETS['legal-hold.release'],
 ])
 
 export const assuranceRecordSchema = z.strictObject({

@@ -34,6 +34,7 @@ export const IDENTITY_PERMISSIONS = Object.freeze([
   { name: 'identity.groups:rename', description: 'Rename a group', risk: 'medium', effect: 'change' },
   { name: 'identity.groups:reparent', description: 'Move a group under another parent in the same tenant', risk: 'critical', effect: 'change' },
   { name: 'identity.groups:archive', description: 'Archive a group', risk: 'high', effect: 'change' },
+  { name: 'identity.groups:delete', description: 'Delete an archived group, disposing of its information in every member', risk: 'critical', effect: 'change' },
   { name: 'identity.group-settings:manage', description: 'Change joining, guest, archive and departure data settings', risk: 'high', effect: 'change' },
   { name: 'identity.group-approvals:manage', description: 'Raise or restore a group\'s approval requirements, and change its safety periods', risk: 'critical', effect: 'change' },
   { name: 'identity.group-owners:manage', description: 'Add, remove, suspend or demote an owner', risk: 'critical', effect: 'change' },
@@ -48,7 +49,10 @@ export const IDENTITY_PERMISSIONS = Object.freeze([
   { name: 'identity.identities:suspend', description: 'Suspend or reinstate an identity, for platform-wide reasons only', risk: 'high', effect: 'change' },
   { name: 'identity.orphaned-groups:recover', description: 'Propose an owner for an orphaned group', risk: 'critical', effect: 'change' },
   { name: 'identity.tenants:view', description: 'See a tenant and its jurisdiction and data region', risk: 'low', effect: 'view' },
-  { name: 'identity.tenants:manage', description: 'Provision a tenant or start its closure', risk: 'critical', effect: 'change' },
+  { name: 'identity.tenants:manage', description: 'Provision a tenant', risk: 'critical', effect: 'change' },
+  { name: 'identity.tenants:close', description: 'Request or cancel a tenant\'s shutdown, which the platform\'s operators approve', risk: 'critical', effect: 'change' },
+  { name: 'identity.tenants:export', description: 'Download a closing tenant\'s governance records (announced to the platform)', risk: 'high', effect: 'change' },
+  { name: 'identity.legal-holds:manage', description: 'Place or release a legal hold on a group or tenant', risk: 'critical', effect: 'change' },
   { name: 'identity.break-glass-reviews:close', description: 'Close the review that follows a break-glass action', risk: 'high', effect: 'change' },
 ] as const satisfies readonly IdentityPermissionDefinition[])
 

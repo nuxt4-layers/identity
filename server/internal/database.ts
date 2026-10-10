@@ -74,6 +74,17 @@ const DOMAIN_ERRORS: Readonly<Record<string, IdentityError['code']>> = {
   'identity:group-not-orphaned': 'conflict',
   'identity:recovery-by-owners': 'conflict',
   'identity:not-longest-member': 'conflict',
+  // End of life (phase 6)
+  'identity:group-not-archived': 'conflict',
+  'identity:root-group': 'conflict',
+  'identity:platform-group': 'conflict',
+  'identity:archived-too-recently': 'conflict',
+  'identity:live-children': 'conflict',
+  'identity:tenant-not-active': 'conflict',
+  'identity:tenant-protected': 'conflict',
+  'identity:not-closing': 'conflict',
+  'identity:disposal-started': 'conflict',
+  'identity:hold-not-active': 'conflict',
 }
 
 /** Maps a database error to a contract error. Unknown failures are `unavailable` and fail closed. */

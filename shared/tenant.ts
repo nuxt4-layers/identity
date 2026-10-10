@@ -12,10 +12,14 @@ import { externalIdSchema, identifierSchema, instantSchema, registryCodeSchema, 
  */
 
 /**
+ * iam-integration's tenant lifecycle:
  * - `active` — normal operation.
- * - `closing` — tenant shutdown in progress (iam-integration planned process
- *   "Tenant lifecycle"): no new groups or memberships.
- * - `closed` — its data has been disposed of or exported under its jurisdiction.
+ * - `closing` — the notice period before shutdown: no new groups,
+ *   memberships or accepted invitations; the root groups' owners may export
+ *   the tenant's governance records; people whose home tenant it is will be
+ *   re-homed. Cancellable until `closesAt`.
+ * - `closed` — every group in it deleted; a tombstone with its jurisdiction
+ *   and data region remains.
  */
 export const TENANT_STATES = ['active', 'closing', 'closed'] as const
 export type TenantState = typeof TENANT_STATES[number]
@@ -33,6 +37,8 @@ export const tenantSchema = z.strictObject({
    */
   dataRegion: registryCodeSchema,
   createdAt: instantSchema,
+  /** For a `closing` tenant: when its notice period ends and it closes. */
+  closesAt: instantSchema.nullable(),
   version: versionSchema,
 })
 

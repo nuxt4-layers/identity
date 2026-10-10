@@ -26,6 +26,7 @@ import { pendingChangeSchema } from '../shared/approvals'
 import { provisionedIdentitySchema, provisioningReservationSchema, signInStatusSchema } from '../shared/provisioning'
 import { scimGroupStructureSchema, scimUserStructureSchema } from '../shared/scim'
 import { tenantSchema } from '../shared/tenant'
+import { disposalSchema, legalHoldSchema, tenantExportSchema } from '../shared/end-of-life'
 
 // Identifiers and codes
 export type { CorrelationId, Identifier, Instant, ReasonCode } from '../shared/identifiers'
@@ -76,7 +77,7 @@ export type { TenantRecord, TenantState } from '../shared/tenant'
 export { TENANT_STATES, tenantSchema } from '../shared/tenant'
 
 // Groups, settings and the departure data policy
-export type { DeparturePolicy, GroupKind, GroupRecord, GroupSettings, GroupState, RequiredApprovers } from '../shared/group'
+export type { DeparturePolicy, GroupKind, GroupRecord, GroupRecordState, GroupSettings, GroupState, RequiredApprovers } from '../shared/group'
 export {
   DEFAULT_DEPARTURE_POLICY,
   DEFAULT_GROUP_SETTINGS,
@@ -84,6 +85,7 @@ export {
   DELETION_REQUEST_HANDLING,
   DEPARTURE_ATTRIBUTIONS,
   GROUP_KINDS,
+  GROUP_RECORD_STATES,
   GROUP_STATES,
   HISTORY_VISIBILITIES,
   INVITATION_ACCEPTANCE_MODES,
@@ -167,6 +169,24 @@ export {
   refuseApproval,
   refuseRequest,
 } from '../shared/approvals'
+
+// End of life: legal holds on groups and tenants, disposal, the tenant export, retention
+export type { Disposal, IdentityRetentionKind, LegalHold, LegalHoldSubjectKind, RetentionCounts, TenantGovernanceExport } from '../shared/end-of-life'
+export {
+  DISPOSAL_CONFIRMATION_DAYS,
+  DISPOSAL_STATES,
+  DISPOSAL_SUBJECT_KINDS,
+  IDENTITY_RETENTION_SCHEDULES,
+  LEGAL_HOLD_MAX_DAYS,
+  LEGAL_HOLD_STATES,
+  LEGAL_HOLD_SUBJECT_KINDS,
+  TENANT_EXPORT_MAX_RECORDS,
+  disposalMemberSchema,
+  disposalSchema,
+  legalHoldSchema,
+  retentionCountsSchema,
+  tenantExportSchema,
+} from '../shared/end-of-life'
 
 // Break-glass (ADR-0007)
 export type { BreakGlassAction, BreakGlassRefusal, BreakGlassReview } from '../shared/break-glass'
@@ -295,4 +315,7 @@ export const IDENTITY_DATA_SCHEMAS: Readonly<Record<string, z.ZodType>> = Object
   groupView: groupViewSchema,
   groupMembersPage: groupMembersPageSchema,
   identityExport: identityExportSchema,
+  legalHold: legalHoldSchema,
+  disposal: disposalSchema,
+  tenantExport: tenantExportSchema,
 })
