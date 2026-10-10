@@ -49,7 +49,7 @@ The host application:
 - supplies `provideIdentityApprovalPolicy` (required), adapting Authorisation's catalogue risk levels and the principals who hold a permission in a group. Every read is `strong`;
 - supplies `provideIdentityEventPublisher` (required), the publishing end of its outbox relay;
 - supplies `provideIdentitySubjectResolver` for the `/api/identity/*` endpoints, adapting Authentication's `getAuthenticatedPrincipal(event)`; without it every endpoint answers `unavailable`;
-- optionally supplies `provideIdentityClock`, the suite's one clock (iam-integration's architecture §7), the same one it gives every other member; a clock that can be moved only in tests;
+- optionally supplies `provideIdentityClock`, the suite's one clock ([iam-integration's architecture §7](https://github.com/nuxt4-layers/iam-integration/blob/e986245d746507bf7093ca203e346ab1b571e3a8/docs/architecture.md#7-time)), the same one it gives every other member; a clock that can be moved only in tests;
 - sets `NUXT_IDENTITY_BASE_URL` to its public origin; without it every state-changing endpoint is refused;
 - for the default pages: imports Theme Manager's `presentation.css` and then `@nuxt4-layers/identity/tailwind.css` into its Tailwind stylesheet, sets `identity.routes.signIn` to its sign-in page, and overrides `IdentityPersonName` with a component that asks Profile for names; or turns the pages off (`identity: { pages: { enabled: false } }`);
 - builds its own invitation endpoint, which calls `getIdentityJoining().invite` and hands the token and the address to its delivery, so that the address never reaches Identity;
