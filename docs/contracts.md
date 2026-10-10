@@ -181,7 +181,7 @@ Identity owns pending **governance** changes; Authorisation owns pending role an
 **Rules:**
 
 1. **No self-grant at any risk level** (`refuseRequest` → `self-grant`). Outside their own personal group, nobody requests a change that confers ownership, a reinstatement, an appointment or new membership dates on themselves.
-2. **Approvers** (`refuseApproval`) are never the requester, never the beneficiary, never an identity the requester controls (such as a service identity they created), and must still qualify at decision time: Identity asks Authorisation with a `strong` read when the approval is given. Each approver decides once.
+2. **Approvers** (`refuseApproval`) are never the requester, never the beneficiary, never an identity the requester controls (the service identities created by `service-identity.create` changes they requested, as `getIdentityAccessGovernance` lists them: only active people approve, so the database refuses every one of them), and must still qualify at decision time: Identity asks Authorisation with a `strong` read when the approval is given. Each approver decides once.
 3. **Exact change.** An approval is bound to the change's digest; a change that differs needs a new approval.
 4. **Assurance.** Requesters and approvers meet `STEP_UP_REQUIREMENTS` for the risk: `high` needs aal2; `critical` needs phishing-resistant aal2 within the last 15 minutes.
 5. **Requirement.** `approvalRequirement` takes the group's setting, never below the floor (`low` and `medium`: 0 beyond a requester who is never the beneficiary; `high` and `critical`: 1). Raising it is `critical`.
@@ -276,7 +276,17 @@ The host adapts this to Authorisation's `AuthorisationDirectory`. The reference 
 
 and, when a group context applies, the group's **departure data policy**. Normally read `bounded`. A failure rejects, and Profile shows no name rather than a stale one. Whether the viewer is an administrator (to see a suspended member) is a question Profile asks Authorisation.
 
-### 10.4 Consumed
+### 10.4 Provided: access governance (to Authorisation, through the host)
+
+Authorisation records its own pending role and grant changes and applies the same approval rules Identity applies to governance changes ([access administration](https://github.com/nuxt4-layers/iam-integration/blob/35e86ab288fed79848b513a98cfbd98304a3cb26/docs/processes/access-administration.md)). `getIdentityAccessGovernance()` gives it Identity's facts, in Identity's own vocabulary, every read `strong` and timed by the clock:
+
+- `describeGroup({ groupId, identityId, correlationId })` answers `governedGroupSchema`: the group's tenant, kind, state, parent (`null` for a root or personal group) and root (the first of its lineage, itself for a root or personal group); for a personal group, whose it is (`personalOfIdentityId`); its approval requirement and reference rule (§5.5; the defaults for a personal group); the safety periods in force for it (§21: `publishedDelayHighHours`, `publishedDelayCriticalHours`, `approvalExpiryDays`, `recoveryHoldHours`; the platform's for a personal group); and, for the identity named as requester, the end of their recovery hold if one is running now (§8) and the identities they control (service identities created by `service-identity.create` changes they requested, not closed), which never approve for them. An unknown group is `null`;
+- `isOwner({ identityId, groupId })`: whether Identity records the identity as an owner of the group in effect now (an active membership within its dates, of an active person), as the owner fallbacks of the approval route read it;
+- `countOwners({ groupId, excluding })`: how many such owners the group has, other than those listed, as the route counts them.
+
+It decides nothing and checks no permission: the host calls it from its adapter, server-side only, and never over HTTP. It reveals group settings, safety periods and owner counts, never personal data. Malformed input is `validation-failed`; a failure **rejects** (`unavailable`), never answering null, partial or stale data.
+
+### 10.5 Consumed
 
 | Port | Supplied from | Purpose | Required |
 |---|---|---|---|
@@ -286,6 +296,7 @@ and, when a group context applies, the group's **departure data policy**. Normal
 | `IdentityEventPublisher` | Host's outbox relay | Publishes each outbox event at least once | Yes |
 | `IdentityPolicy` | Host | Overrides within bounds (§15) | No |
 | `IdentitySubjectResolver` | Authentication, through the host | Who is signed in, for the HTTP endpoints (§19): the host adapts `getAuthenticatedPrincipal(event)` | For the endpoints; without it every endpoint answers `unavailable` |
+| `IdentityClock` | Host (the suite's one clock) | The current time (`now()`) for everything Identity keeps or judges: safety periods, delays, expiries, the closure grace period, the recovery hold, recent authentication, and every database transaction's time (`identity.at`), which the database's own checks and triggers read | No; without it, the system clock. A clock that throws or answers no valid date fails the operation as `unavailable` |
 
 `IdentityAccessDecision` is an addition to iam-integration's architecture §3, which listed only the approval-policy port; see [design decisions](design-decisions.md) §8.
 
@@ -367,6 +378,7 @@ The host calls these on the server; none is an HTTP route. Each uses the supplie
 | `migrateIdentityDatabase({ pool, runtimeRole, schema? })` | Applies migrations with the **migration** pool, granting the runtime role only what it needs. Refuses a runtime role that is a superuser, has `BYPASSRLS` or is the migration role | Throws; nothing is applied |
 | `getIdentityProvisioning()` | The provisioning port (§10.1) | `validation-failed` (malformed input, unknown or inactive home tenant), `forbidden` (unknown identity), `conflict` (not pending, or past its confirmation window), `unavailable` |
 | `getIdentityDirectory()` | The directory port (§10.2). Always reads the source of truth | `unavailable`: the port rejects, never answers null for a failure |
+| `getIdentityAccessGovernance()` | The access-governance port (§10.4), for the host's adapter to Authorisation: `describeGroup`, `isOwner`, `countOwners`. Always reads the source of truth; decides nothing. Server-only | `validation-failed` (malformed input), `unavailable`: the port rejects, never answers null for a failure |
 | `relayIdentityOutbox({ limit? })` | Publishes up to `limit` (default 100) outbox events in order, at least once. Returns `{ published, failed }` | `unavailable` |
 | `getIdentityDisclosureContext()` | The disclosure-context port (§10.3), for the host's adapter to Profile | `validation-failed`, `unavailable` |
 | `getIdentityGovernance()` | Changes that need no second approver: `createGroup` (child group, `identity.groups:create`; the creator becomes founding owner), `renameGroup` (`identity.groups:rename`), `pauseMembership`, `resumeMembership` and `leaveGroup` (the member's own), and `actOnMember` (`remove` or `suspend` a member who is not an owner, with a reason code). Each takes the authenticated `subject` and a `correlationId` | `validation-failed` (malformed input, unsafe name), `forbidden` (unknown target, or refused by Authorisation), `insufficient-assurance`, `conflict` (last owner, personal group, confusable sibling name, depth, owner needing approval), `unavailable` |
@@ -482,3 +494,4 @@ Changes before 1.0:
 | 5 | `selfViewSchema` gains `groupNames` (the person's own groups); presentation entry points `./presentation` and `./tailwind.css` | No |
 | Safety periods | `group.change-safety-periods`; `safetyPeriodsSchema`, `effectiveSafetyPeriodsSchema` and helpers; `groupViewSchema` gains `safetyPeriods`; `group.settings-changed` may name `safetyPeriods`; migration `0007_safety_periods` | `groupViewSchema` readers gain a field, and anyone constructing it must add it; consumers of `group.settings-changed` must accept the new setting name |
 | 5c | `selfViewSchema` gains `formerGroupNames` (the person's groups left, for Profile's page to choose anonymity in one of them); migration `0008_former_group_names`; `DELIBERATE_PAIRINGS` moves to `presentation/pairings.ts` and is no longer auto-imported (still exported from `./presentation`) | Anyone constructing `selfViewSchema` must add the field; hosts that used the auto-imported `DELIBERATE_PAIRINGS` import it from `./presentation` |
+| 6 | `getIdentityAccessGovernance()` and `governedGroupSchema` (§10.4), for Authorisation's own pending changes; migration `0009_access_governance`; the consumed ports become §10.5 | No |

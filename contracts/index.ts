@@ -11,6 +11,7 @@
  */
 
 import type { z } from 'zod'
+import { governedGroupSchema } from '../shared/access-governance'
 import { breakGlassReviewSchema } from '../shared/break-glass'
 import { groupMembersPageSchema, groupViewSchema, identityExportSchema, selfViewSchema } from '../shared/administration'
 import { actorContextSchema, groupDescriptionSchema } from '../shared/directory'
@@ -171,7 +172,7 @@ export {
 export type { BreakGlassAction, BreakGlassRefusal, BreakGlassReview } from '../shared/break-glass'
 export { BREAK_GLASS_ACTIONS, BREAK_GLASS_REFUSALS, breakGlassReviewSchema, mayCloseReview, refuseBreakGlass } from '../shared/break-glass'
 
-// Provided ports: provisioning, directory, disclosure context
+// Provided ports: provisioning, directory, access governance, disclosure context
 export type { IdentityProvisioning, SignInStatus } from '../shared/provisioning'
 export {
   SIGN_IN_OUTCOMES,
@@ -190,6 +191,8 @@ export {
   directoryMembershipSchema,
   groupDescriptionSchema,
 } from '../shared/directory'
+export type { GovernedGroup, IdentityAccessGovernance } from '../shared/access-governance'
+export { ACCESS_GOVERNANCE_MAX_CONTROLS, ACCESS_GOVERNANCE_SAFETY_PERIODS, governedGroupSchema } from '../shared/access-governance'
 export type { DisclosureContext, DisclosureRequest, IdentityDisclosureContextPort, Relationship } from '../shared/disclosure'
 export {
   DISCLOSURE_MAX_SUBJECTS,
@@ -218,6 +221,7 @@ export type {
   AccessDecision,
   IdentityAccessDecision,
   IdentityApprovalPolicy,
+  IdentityClock,
   IdentityDatabase,
   IdentityEventPublisher,
   IdentitySubject,
@@ -283,6 +287,7 @@ export const IDENTITY_DATA_SCHEMAS: Readonly<Record<string, z.ZodType>> = Object
   signInStatus: signInStatusSchema,
   actorContext: actorContextSchema,
   groupDescription: groupDescriptionSchema,
+  governedGroup: governedGroupSchema,
   disclosureContext: disclosureContextSchema,
   scimUserStructure: scimUserStructureSchema,
   scimGroupStructure: scimGroupStructureSchema,

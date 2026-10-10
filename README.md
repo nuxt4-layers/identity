@@ -75,6 +75,8 @@ export default defineNitroPlugin(async () => {
   provideIdentityEventPublisher(outboxRelay)
   provideIdentitySubjectResolver({ resolve: event => getAuthenticatedPrincipal(event) })
   provideIdentityPolicy({ platformGroupId })
+  // Optional: the suite's one clock, the same for every member (system clock otherwise)
+  provideIdentityClock(clock)
 })
 ```
 

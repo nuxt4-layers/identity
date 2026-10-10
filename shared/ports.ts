@@ -86,5 +86,16 @@ export interface IdentityEventPublisher {
   publish(event: IdentityEvent): Promise<void>
 }
 
+/**
+ * The current time, supplied by the host (iam-integration's architecture §7).
+ * Optional: without it Identity uses the system clock. Every time Identity
+ * keeps or judges (safety periods, delays, expiries, grace periods, recent
+ * authentication, and the database's own checks) comes from it. A clock is
+ * trusted like a key: one that can be moved is for tests only.
+ */
+export interface IdentityClock {
+  now(): Date
+}
+
 /** Every call through these ports carries the request's correlation identifier. */
 export const portCallContextSchema = z.strictObject({ correlationId: correlationIdSchema })

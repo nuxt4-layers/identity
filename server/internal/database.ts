@@ -88,11 +88,18 @@ export function translateError(error: unknown): IdentityError {
   return code ? new IdentityError(code, message) : new IdentityError('unavailable', message || 'identity database failure')
 }
 
-export function database(port: IdentityDatabase & { schema: string }): Database {
+/**
+ * Identity's database over the host's pool. Every transaction runs at a time
+ * (`identity.at`, read by the database's own checks and triggers): the
+ * caller's, or else the clock's, so the database never judges time by its
+ * own `now()` while a clock is supplied.
+ */
+export function database(port: IdentityDatabase & { schema: string }, clock: { now(): Date } = { now: () => new Date() }): Database {
   const schema = quoteIdentifier(port.schema, 'schema')
   return {
     schema,
     async transaction(work, context = {}) {
+      const at = context.at ?? clock.now()
       let client: PoolClientLike
       try {
         client = await port.pool.connect() as PoolClientLike
@@ -104,7 +111,7 @@ export function database(port: IdentityDatabase & { schema: string }): Database 
         await client.query('begin')
         await client.query(
           `select set_config('identity.tenant_ids', $1, true), set_config('identity.actor_id', $2, true), set_config('identity.correlation_id', $3, true), set_config('identity.at', $4, true)`,
-          [`{${(context.tenantIds ?? []).join(',')}}`, context.actorId ?? '', context.correlationId ?? '', context.at?.toISOString() ?? ''],
+          [`{${(context.tenantIds ?? []).join(',')}}`, context.actorId ?? '', context.correlationId ?? '', at.toISOString()],
         )
         const result = await work(client)
         await client.query('commit')

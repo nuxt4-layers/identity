@@ -3,6 +3,7 @@ import { DEFAULT_IDENTITY_POLICY, IdentityCompositionError } from '../contracts'
 import {
   clearIdentityComposition,
   provideIdentityAccessDecision,
+  provideIdentityClock,
   provideIdentityApprovalPolicy,
   provideIdentityDatabase,
   provideIdentityEventPublisher,
@@ -10,6 +11,7 @@ import {
   provideIdentitySubjectResolver,
   useIdentityAccessDecision,
   useIdentityApprovalPolicy,
+  useIdentityClock,
   useIdentityDatabase,
   useIdentityEventPublisher,
   useIdentityPolicy,
@@ -140,3 +142,35 @@ describe('Identity composition ports', () => {
   })
 })
 
+
+describe('the clock (iam-integration architecture §7)', () => {
+  it('uses the system clock until the host supplies one', () => {
+    const before = Date.now()
+    const at = useIdentityClock().now().getTime()
+    expect(at).toBeGreaterThanOrEqual(before)
+    expect(at).toBeLessThanOrEqual(Date.now())
+  })
+
+  it('takes every time from the supplied clock', () => {
+    provideIdentityClock({ now: () => new Date('2031-01-02T03:04:05.000Z') })
+    expect(useIdentityClock().now().toISOString()).toBe('2031-01-02T03:04:05.000Z')
+  })
+
+  it('refuses a clock without now()', () => {
+    expect(() => provideIdentityClock({} as never)).toThrow(TypeError)
+  })
+
+  it('fails closed as unavailable when the clock throws or answers no valid date', () => {
+    for (const now of [() => { throw new Error('down') }, () => new Date(Number.NaN), () => '2031-01-01T00:00:00Z']) {
+      provideIdentityClock({ now } as never)
+      expect(() => useIdentityClock().now()).toThrow(expect.objectContaining({ name: 'IdentityError', code: 'unavailable' }))
+    }
+  })
+
+  it('hands out a copy, so a caller cannot move the clock', () => {
+    const fixed = new Date('2031-01-02T03:04:05.000Z')
+    provideIdentityClock({ now: () => fixed })
+    useIdentityClock().now().setFullYear(2040)
+    expect(fixed.getUTCFullYear()).toBe(2031)
+  })
+})

@@ -2437,6 +2437,43 @@ revoke all on function {{schema}}.former_group_names(uuid) from public;
 grant execute on function {{schema}}.former_group_names(uuid) to {{runtime}};
 `,
   },
+  {
+    id: '0009_access_governance',
+    sql: `
+-- Access governance (docs/contracts.md §10.4): the facts Authorisation needs
+-- to apply Identity's approval rules to its own pending changes, through the
+-- host's adapter. A group's description, its parent, the person whose
+-- personal group it is, its approval requirement, and, for the requester,
+-- when their credentials were last recovered and the service identities they
+-- created (applied service-identity.create changes they requested), which
+-- never approve for them. Identifiers, codes, booleans and an instant only.
+-- SECURITY DEFINER because identities and changes span tenants; the layer
+-- turns these facts into the port's answer and parses it with the contract.
+create function {{schema}}.access_governance_facts(p_group uuid, p_identity uuid, p_limit integer)
+returns jsonb language sql stable security definer set search_path = pg_catalog, pg_temp as $$
+  select jsonb_build_object(
+    'group', {{schema}}.group_json(g.group_id),
+    'parentGroupId', g.parent_group_id,
+    'personalOfIdentityId', (select i.identity_id from {{schema}}.identity i where g.kind = 'personal' and i.personal_group_id = g.group_id),
+    'approvals', case when g.kind = 'standard' then g.settings -> 'approvals' end,
+    'credentialsRecoveredAt', (select {{schema}}.iso(i.credentials_recovered_at) from {{schema}}.identity i where i.identity_id = p_identity),
+    'controls', coalesce((
+      select jsonb_agg(controlled.identity_id order by controlled.identity_id)
+      from (
+        select distinct s.identity_id
+        from {{schema}}.pending_change c join {{schema}}.identity s on s.identity_id = c.created_id
+        where c.requester_id = p_identity and c.type = 'service-identity.create' and c.state = 'applied'
+          and s.kind = 'service' and s.state <> 'closed'
+        order by s.identity_id
+        limit greatest(least(p_limit, 1000), 0)
+      ) controlled), '[]'::jsonb))
+  from {{schema}}."group" g where g.group_id = p_group
+$$;
+
+revoke all on function {{schema}}.access_governance_facts(uuid, uuid, integer) from public;
+grant execute on function {{schema}}.access_governance_facts(uuid, uuid, integer) to {{runtime}};
+`,
+  },
 ]
 
 const IDENTIFIER_PATTERN = /^[a-z_][a-z0-9_]{0,62}$/
