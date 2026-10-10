@@ -1,9 +1,11 @@
+import { z } from 'zod'
 import type { Disposal, IdentityAccessDecision, IdentityPolicy, IdentitySubject, LegalHoldSubjectKind, TenantGovernanceExport } from '../../contracts'
 import {
   IdentityError,
   LEGAL_HOLD_SUBJECT_KINDS,
   STEP_UP_REQUIREMENTS,
   TENANT_EXPORT_MAX_RECORDS,
+  UUID_PATTERN,
   correlationIdSchema,
   disposalMemberSchema,
   disposalSchema,
@@ -15,6 +17,13 @@ import {
 import type { Database } from './database'
 import type { Clock } from './provisioning'
 import { systemClock } from './provisioning'
+
+/**
+ * A confirming member's own event identifier: any lower-case UUID, since
+ * each member issues its own (Authorisation's are version 4). Identity only
+ * keeps it, to count a redelivered confirmation once.
+ */
+const memberEventIdSchema = z.string().regex(UUID_PATTERN, 'Expected a lower-case UUID')
 
 /**
  * PRIVATE. End of life (docs/contracts.md §22; iam-integration's group
@@ -72,7 +81,7 @@ export async function recordDisposal(
 ): Promise<{ recorded: boolean }> {
   const subject = subjectOf(input.subject)
   const member = parse(() => disposalMemberSchema.parse(input.member))
-  const eventId = parse(() => identifierSchema.parse(input.eventId))
+  const eventId = parse(() => memberEventIdSchema.parse(input.eventId))
   const correlationId = parse(() => correlationIdSchema.parse(input.correlationId))
   const now = clock.now()
   const { rows } = await db.transaction(client => client.query<{ recorded: boolean }>(
