@@ -14,7 +14,7 @@ A Nuxt 4 foundation layer that answers one question for the rest of the platform
 
 Part of the `nuxt4-layers` Identity and Access Management (IAM) suite, with [`authentication`](https://github.com/nuxt4-layers/authentication), [`profile`](https://github.com/nuxt4-layers/profile), [`authorisation`](https://github.com/nuxt4-layers/authorisation) and [`iam-integration`](https://github.com/nuxt4-layers/iam-integration).
 
-**Status:** phase 5 of 6. The contract, conformance suite, composition ports, PostgreSQL storage with row-level security, the outbox, provisioning, the directory and disclosure-context ports, child groups, membership changes, the governance approvals engine, invitations, join requests, the identity lifecycle, orphaned-group recovery, the recovery hold, break-glass the `/api/identity/*` administration endpoints and accessible default pages are in place; host integration follows (see [docs/roadmap.md](docs/roadmap.md)).
+**Status:** 1.0.0. Contract version 1 is frozen for 1.x; see [CHANGELOG.md](CHANGELOG.md) and the [roadmap](docs/roadmap.md).
 
 ## Owns
 
