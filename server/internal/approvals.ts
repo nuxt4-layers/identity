@@ -81,6 +81,13 @@ interface Located {
    * platform group or in one of the tenant's root groups).
    */
   authoriseOnAnyOf?: string[]
+  /**
+   * Instead of the change's own permission on the governing group: the
+   * permission the requester must hold, and where. A service identity's
+   * membership is requested by whoever manages it, in its owning group, and
+   * decided in the target group.
+   */
+  authoriseAs?: { permission: IdentityPermissionName, groupId: string }
   beneficiaryId: string | null
   createdId: string | null
   internal: Record<string, unknown>
@@ -114,10 +121,10 @@ function higherRisk(a: IdentityRiskLevel, b: IdentityRiskLevel): IdentityRiskLev
   return IDENTITY_RISK_LEVELS.indexOf(a) >= IDENTITY_RISK_LEVELS.indexOf(b) ? a : b
 }
 
-/** Normalises a root group's name before the request is parsed, so the stored form is the safe one. */
+/** Normalises a root group's or service identity's name before the request is parsed, so the stored form is the safe one. */
 function normaliseRequest(raw: unknown): unknown {
   const request = raw as { type?: unknown, target?: { name?: unknown } } | null
-  if (request?.type !== 'group.create-root' || typeof request.target?.name !== 'string') return raw
+  if ((request?.type !== 'group.create-root' && request?.type !== 'service-identity.create') || typeof request.target?.name !== 'string') return raw
   const name = checkSafeName(request.target.name)
   if (!name.ok) throw new IdentityError('validation-failed', name.problem)
   return { ...request, target: { ...request.target, name: name.value } }
@@ -172,6 +179,21 @@ export function createApprovals({ db, access, approvalPolicy, policy, clock = sy
   async function signInState(client: QueryClient, identityId: string): Promise<{ kind: string, state: string } | null> {
     const { rows } = await client.query<{ result: { kind: string, state: string } | null }>(`select ${db.schema}.sign_in_status($1) as result`, [identityId])
     return rows[0]?.result ?? null
+  }
+
+  interface ServiceFacts { identityId: string, state: string, owningGroupId: string, tenantId: string, groupIds: string[] }
+
+  /** A service identity's facts; anything else, or nothing, is `forbidden`. */
+  async function serviceFacts(identityId: string): Promise<ServiceFacts> {
+    const { rows } = await db.transaction(client => client.query<{ result: ServiceFacts | null }>(`select ${db.schema}.service_identity_facts($1) as result`, [identityId]))
+    const facts = rows[0]?.result
+    if (!facts) throw new IdentityError('forbidden')
+    return facts
+  }
+
+  async function serviceNameTaken(groupId: string, skeleton: string, except: string | null): Promise<boolean> {
+    const { rows } = await db.transaction(client => client.query<{ taken: boolean }>(`select ${db.schema}.service_name_taken($1, $2, $3) as taken`, [groupId, skeleton, except]))
+    return rows[0]?.taken === true
   }
 
   /** Only an active person requests or approves governance changes. */
@@ -283,16 +305,69 @@ export function createApprovals({ db, access, approvalPolicy, policy, clock = sy
           },
         }
       }
-      case 'group.archive':
-      case 'service-identity.create': {
+      case 'group.archive': {
         const governing = await standardGroup(request.target.groupId)
         return {
           governing,
           alsoAuthoriseOn: [],
           beneficiaryId: null,
-          createdId: request.type === 'service-identity.create' ? await newIdentifier() : null,
+          createdId: null,
           internal: {},
           check: async () => (governing.state === 'active' ? null : 'group is not active'),
+        }
+      }
+      case 'service-identity.create': {
+        const governing = await standardGroup(request.target.groupId)
+        const skeleton = confusableSkeleton(request.target.name)
+        return {
+          governing,
+          alsoAuthoriseOn: [],
+          beneficiaryId: null,
+          createdId: await newIdentifier(),
+          internal: { nameSkeleton: skeleton },
+          check: async () => {
+            if (governing.state !== 'active') return 'group is not active'
+            if (await serviceNameTaken(governing.groupId, skeleton, null)) return 'a service identity of the group has a confusable name'
+            return null
+          },
+        }
+      }
+      case 'service-identity.join': {
+        const service = await serviceFacts(request.target.identityId)
+        const governing = await standardGroup(request.target.groupId)
+        return {
+          governing,
+          alsoAuthoriseOn: [],
+          authoriseAs: { permission: 'identity.service-identities:manage', groupId: service.owningGroupId },
+          beneficiaryId: service.identityId,
+          createdId: null,
+          internal: { owningGroupId: service.owningGroupId },
+          check: async () => {
+            if (service.state !== 'active') return 'service identity is not active'
+            if (governing.state !== 'active') return 'group is not active'
+            if (governing.tenantId !== service.tenantId) return 'a service identity joins groups of its own tenant only'
+            if (service.groupIds.includes(governing.groupId)) return 'already a member'
+            return null
+          },
+        }
+      }
+      case 'service-identity.suspend':
+      case 'service-identity.reinstate':
+      case 'service-identity.close': {
+        const service = await serviceFacts(request.target.identityId)
+        const governing = await standardGroup(service.owningGroupId)
+        return {
+          governing,
+          alsoAuthoriseOn: [],
+          beneficiaryId: service.identityId,
+          createdId: null,
+          internal: {},
+          check: async () => {
+            if (request.type === 'service-identity.suspend' && service.state !== 'active') return 'service identity is not active'
+            if (request.type === 'service-identity.reinstate' && service.state !== 'suspended') return 'service identity is not suspended'
+            if (request.type === 'service-identity.close' && service.state === 'closed') return 'service identity is closed'
+            return null
+          },
         }
       }
       case 'group.change-settings': {
@@ -618,7 +693,8 @@ export function createApprovals({ db, access, approvalPolicy, policy, clock = sy
       if (request.type === 'group.appoint-owner') return recover(subject, request, correlationId)
       const located = await locate(request, subject.principalId)
       const permission = GOVERNANCE_CHANGES[request.type].permission
-      if (located.authoriseOnAnyOf) await authoriseAny(subject, permission, located.authoriseOnAnyOf, correlationId)
+      if (located.authoriseAs) await authorise(subject, located.authoriseAs.permission, located.authoriseAs.groupId, correlationId)
+      else if (located.authoriseOnAnyOf) await authoriseAny(subject, permission, located.authoriseOnAnyOf, correlationId)
       else await authorise(subject, permission, located.governing.groupId, correlationId)
       for (const groupId of located.alsoAuthoriseOn) await authorise(subject, permission, groupId, correlationId)
       await requireActivePerson(subject)
@@ -695,6 +771,13 @@ export function createApprovals({ db, access, approvalPolicy, policy, clock = sy
       const refusal = refuseApproval({ change, approverId: subject.principalId, qualifies: true, controlledByRequester: false, assurance, changeDigest: digest, now })
       if (refusal === 'insufficient-assurance') throw new IdentityError('insufficient-assurance')
       if (refusal) throw new IdentityError('conflict', refusal)
+      // Whoever may manage a service identity controls it, and never approves a change that benefits it.
+      if (input.decision === 'approve' && change.type === 'service-identity.join' && 'identityId' in change.target) {
+        const service = await serviceFacts(change.target.identityId)
+        // Whether they hold the permission at all, whatever their session's assurance.
+        const controls = await port(() => approvalPolicy.qualifies({ approverId: subject.principalId, permission: 'identity.service-identities:manage', groupId: service.owningGroupId }), 'approval policy')
+        if (controls) throw new IdentityError('conflict', 'you control this service identity')
+      }
       // A tenant's shutdown is never approved by its own owners; checked again when it applies.
       if (change.type === 'tenant.close' && input.decision === 'approve' && 'tenantId' in change.target) {
         const tenant = await tenantFacts(change.target.tenantId)

@@ -20,6 +20,8 @@ import { createQueries, createScimStructure, exportIdentity } from '../internal/
 import type { Lifecycle } from '../internal/lifecycle'
 import { createLifecycle, recordCredentialRecovery } from '../internal/lifecycle'
 import { createProvisioning } from '../internal/provisioning'
+import type { ServiceIdentities } from '../internal/service-identities'
+import { createServiceIdentities } from '../internal/service-identities'
 import { useIdentityAccessDecision, useIdentityApprovalPolicy, useIdentityClock, useIdentityDatabase, useIdentityEventPublisher, useIdentityPolicy } from './identity-composition'
 
 /**
@@ -217,6 +219,19 @@ export function getIdentityDisposal(subject: { kind: LegalHoldSubjectKind, id: s
  */
 export function exportIdentityTenantData(input: { subject: IdentitySubject, tenantId: string, correlationId: string }): Promise<TenantGovernanceExport> {
   return createTenantExport({ ...runtime(), access: useIdentityAccessDecision(), policy: useIdentityPolicy() }).exportTenant(input)
+}
+
+/**
+ * Service identities (iam-integration's service identities process):
+ * listing, naming and taking one out of a group, for whoever may manage it
+ * (`identity.service-identities:manage` in its owning group);
+ * `mayManageCredentials` for Authentication's service-governance port; and
+ * `describe`, who hears of its credentials, for the host's notices. Creating
+ * one, adding it to a group and its lifecycle are governance changes
+ * (`getIdentityApprovals()`).
+ */
+export function getIdentityServiceIdentities(): ServiceIdentities {
+  return createServiceIdentities({ ...runtime(), access: useIdentityAccessDecision() })
 }
 
 interface OperatorConnection {

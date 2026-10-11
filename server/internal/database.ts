@@ -85,6 +85,10 @@ const DOMAIN_ERRORS: Readonly<Record<string, IdentityError['code']>> = {
   'identity:not-closing': 'conflict',
   'identity:disposal-started': 'conflict',
   'identity:hold-not-active': 'conflict',
+  // Service identities (phase 8)
+  'identity:service-membership': 'conflict',
+  'identity:confusable-name': 'conflict',
+  'identity:name-required': 'validation-failed',
 }
 
 /** Maps a database error to a contract error. Unknown failures are `unavailable` and fail closed. */

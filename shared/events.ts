@@ -31,6 +31,8 @@ const payloads = {
   'identity.resumed': z.strictObject({ identityId: id }),
   'identity.suspended': z.strictObject({ identityId: id, reasonCode: reasonCodeSchema, changeId: id.nullable(), breakGlassReviewId: id.nullable() }),
   'identity.reinstated': z.strictObject({ identityId: id, changeId: id }),
+  /** A service identity's name changed; the name itself stays in Identity's records. */
+  'identity.renamed': z.strictObject({ identityId: id }),
   'identity.closure-requested': z.strictObject({ identityId: id, closesAt: instantSchema }),
   'identity.closure-cancelled': z.strictObject({ identityId: id }),
   'identity.closed': z.strictObject({ identityId: id, personalGroupId: id.nullable() }),

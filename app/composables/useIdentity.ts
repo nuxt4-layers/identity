@@ -1,4 +1,4 @@
-import type { BreakGlassAction, BreakGlassReview, GroupMembersPage, GroupView, InvitationRecord, JoinRequestRecord, PendingChange, SelfView } from '../../contracts'
+import type { BreakGlassAction, BreakGlassReview, GroupMembersPage, GroupView, InvitationRecord, JoinRequestRecord, PendingChange, SelfView, ServiceIdentity } from '../../contracts'
 import { IDENTITY_API_PREFIX } from '../../contracts'
 
 /**
@@ -55,6 +55,11 @@ export function useIdentity() {
       send<PendingChange>('POST', `/changes/${change.changeId}/decision`, { decision, changeDigest: change.changeDigest }),
     cancelChange: (changeId: string) => send<PendingChange>('POST', `/changes/${changeId}/cancel`),
     objectToChange: (changeId: string) => send<PendingChange>('POST', `/changes/${changeId}/objection`),
+
+    serviceIdentities: (groupId: string) => get<{ groupId: string, serviceIdentities: ServiceIdentity[] }>(`/groups/${groupId}/service-identities`),
+    serviceIdentity: (identityId: string) => get<ServiceIdentity>(`/service-identities/${identityId}`),
+    renameServiceIdentity: (identityId: string, name: string) => send<ServiceIdentity>('PATCH', `/service-identities/${identityId}`, { name }),
+    serviceIdentityLeave: (identityId: string, groupId: string) => send<ServiceIdentity>('POST', `/service-identities/${identityId}/leave`, { groupId }),
 
     breakGlass: (action: BreakGlassAction, targetId: string, reasonCode: string) => send<BreakGlassReview>('POST', '/break-glass/actions', { action, targetId, reasonCode }),
   }

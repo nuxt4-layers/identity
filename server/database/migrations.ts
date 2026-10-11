@@ -3313,6 +3313,254 @@ grant execute on function
 to {{runtime}};
 `,
   },
+  {
+    id: '0011_service_identities',
+    sql: `
+-- Service identities (iam-integration's service identities process): a safe
+-- name, memberships only where explicitly added in the owning tenant, and a
+-- lifecycle decided in the owning group.
+
+alter table {{schema}}.identity add column name text, add column name_skeleton text;
+alter table {{schema}}.identity add constraint identity_name_service_only
+  check (kind = 'service' or (name is null and name_skeleton is null));
+alter table {{schema}}.identity add constraint identity_name_with_skeleton
+  check ((name is null) = (name_skeleton is null));
+-- No two live service identities of a group with confusable names.
+create unique index identity_service_name_idx on {{schema}}.identity (owner_group_id, name_skeleton)
+  where kind = 'service' and state <> 'closed' and name_skeleton is not null;
+
+-- A service identity is only ever a member: never an owner, never a guest,
+-- only in its owning tenant, and only through service-identity.join. No
+-- owner-role exception: these hold however the row is written.
+create function {{schema}}.guard_service_membership() returns trigger language plpgsql security definer set search_path = pg_catalog, pg_temp as $$
+declare i {{schema}}.identity%rowtype;
+begin
+  select * into i from {{schema}}.identity where identity_id = new.identity_id;
+  if not found or i.kind <> 'service' then return new; end if;
+  if new.owner or new.founding_owner or new.kind <> 'member' then raise exception 'identity:service-membership'; end if;
+  if tg_op = 'INSERT' then
+    if new.tenant_id <> i.home_tenant_id then raise exception 'identity:service-membership'; end if;
+    if coalesce(current_setting('identity.service_join', true), '') <> new.identity_id::text then
+      raise exception 'identity:service-membership';
+    end if;
+  end if;
+  return new;
+end $$;
+
+create trigger guard_service_membership before insert or update of owner, founding_owner, kind on {{schema}}.membership
+  for each row execute function {{schema}}.guard_service_membership();
+
+-- A service identity's facts, for the layer; null for anything else.
+create function {{schema}}.service_identity_facts(p_identity uuid)
+returns jsonb language sql stable security definer set search_path = pg_catalog, pg_temp as $$
+  select jsonb_build_object('identityId', i.identity_id, 'state', i.state, 'owningGroupId', i.owner_group_id, 'tenantId', i.home_tenant_id,
+    'groupIds', coalesce((select jsonb_agg(m.group_id order by m.group_id) from {{schema}}.membership m
+      where m.identity_id = i.identity_id and m.state <> 'ended'), '[]'::jsonb))
+  from {{schema}}.identity i where i.identity_id = p_identity and i.kind = 'service'
+$$;
+
+create function {{schema}}.service_name_taken(p_group uuid, p_skeleton text, p_except uuid)
+returns boolean language sql stable security definer set search_path = pg_catalog, pg_temp as $$
+  select exists (select 1 from {{schema}}.identity i where i.kind = 'service' and i.owner_group_id = p_group and i.state <> 'closed'
+    and i.name_skeleton = p_skeleton and i.identity_id is distinct from p_except)
+$$;
+
+create function {{schema}}.service_identity_json(i {{schema}}.identity) returns jsonb language sql stable as $$
+  select jsonb_build_object('identityId', i.identity_id, 'owningGroupId', i.owner_group_id, 'tenantId', i.home_tenant_id, 'name', i.name,
+    'state', i.state, 'createdAt', {{schema}}.iso(i.created_at), 'stateChangedAt', {{schema}}.iso(i.state_changed_at),
+    'groupIds', coalesce((select jsonb_agg(m.group_id order by m.group_id) from {{schema}}.membership m
+      where m.identity_id = i.identity_id and m.state <> 'ended'), '[]'::jsonb))
+$$;
+
+-- The service identities a group owns, closed ones excepted; the layer has
+-- checked that the caller may manage them.
+create function {{schema}}.list_service_identities(p_group uuid)
+returns jsonb language sql stable security definer set search_path = pg_catalog, pg_temp as $$
+  select jsonb_build_object('groupId', p_group, 'serviceIdentities', coalesce((
+    select jsonb_agg({{schema}}.service_identity_json(i) order by i.created_at, i.identity_id)
+    from {{schema}}.identity i where i.kind = 'service' and i.owner_group_id = p_group and i.state <> 'closed'), '[]'::jsonb))
+$$;
+
+create function {{schema}}.get_service_identity(p_identity uuid)
+returns jsonb language sql stable security definer set search_path = pg_catalog, pg_temp as $$
+  select {{schema}}.service_identity_json(i) from {{schema}}.identity i where i.identity_id = p_identity and i.kind = 'service'
+$$;
+
+-- Who hears of a live service identity's credentials: its owning group's active owners.
+create function {{schema}}.service_identity_audience(p_identity uuid, p_at timestamptz)
+returns jsonb language sql stable security definer set search_path = pg_catalog, pg_temp as $$
+  select jsonb_build_object('identityId', i.identity_id, 'owningGroupId', i.owner_group_id,
+    'ownerIds', coalesce((select jsonb_agg(m.identity_id order by m.identity_id) from {{schema}}.membership m
+      join {{schema}}.identity o on o.identity_id = m.identity_id
+      where m.group_id = i.owner_group_id and m.owner and m.state = 'active' and o.state = 'active'
+        and m.starts_at <= p_at and (m.ends_at is null or m.ends_at > p_at)), '[]'::jsonb))
+  from {{schema}}.identity i where i.identity_id = p_identity and i.kind = 'service' and i.state <> 'closed'
+$$;
+
+-- Renames a service identity: a name confers nothing, so it needs no
+-- approval; the layer has checked that the actor manages it.
+create function {{schema}}.rename_service_identity(p_identity uuid, p_name text, p_skeleton text, p_actor uuid, p_correlation uuid, p_at timestamptz)
+returns jsonb language plpgsql volatile security definer set search_path = pg_catalog, pg_temp as $$
+declare i {{schema}}.identity%rowtype;
+begin
+  select * into i from {{schema}}.identity where identity_id = p_identity and kind = 'service' for update;
+  if not found or i.state = 'closed' then raise exception 'identity:unknown'; end if;
+  if {{schema}}.service_name_taken(i.owner_group_id, p_skeleton, p_identity) then raise exception 'identity:confusable-name'; end if;
+  if i.name is distinct from p_name then
+    update {{schema}}.identity set name = p_name, name_skeleton = p_skeleton, version = version + 1 where identity_id = p_identity returning * into i;
+    perform {{schema}}.enqueue_event('identity.renamed', p_actor, 'identity', p_identity, i.version, null, p_correlation, p_at,
+      jsonb_build_object('identityId', p_identity));
+  end if;
+  return {{schema}}.service_identity_json(i);
+end $$;
+
+-- Takes a service identity out of a group, as a person leaves: it ends
+-- access, never grants it, so it needs no approval; the layer has checked
+-- that the actor manages it.
+create function {{schema}}.end_service_membership(p_identity uuid, p_group uuid, p_actor uuid, p_correlation uuid, p_at timestamptz)
+returns jsonb language plpgsql volatile security definer set search_path = pg_catalog, pg_temp as $$
+declare i {{schema}}.identity%rowtype; v_member uuid;
+begin
+  select * into i from {{schema}}.identity where identity_id = p_identity and kind = 'service' for update;
+  if not found then raise exception 'identity:unknown'; end if;
+  select membership_id into v_member from {{schema}}.membership where identity_id = p_identity and group_id = p_group and state <> 'ended' for update;
+  if not found then raise exception 'identity:unknown'; end if;
+  perform {{schema}}.set_context(p_actor, p_correlation, p_at);
+  update {{schema}}.membership set state = 'ended', ended_at = p_at, end_reason = 'left', reason_code = null where membership_id = v_member;
+  return {{schema}}.service_identity_json(i);
+end $$;
+
+-- Applies an approved service-identity change, checking every rule again.
+create function {{schema}}.apply_service_identity(c {{schema}}.pending_change, p_at timestamptz) returns void language plpgsql as $$
+declare
+  v_group {{schema}}."group"%rowtype;
+  v_i {{schema}}.identity%rowtype;
+  v_name text;
+begin
+  if {{schema}}.digest_of(c) <> c.change_digest then raise exception 'identity:change-differs'; end if;
+  perform {{schema}}.set_context(c.requester_id, c.correlation_id, p_at);
+  perform set_config('identity.change_id', c.change_id::text, true);
+  if c.type = 'service-identity.create' then
+    select * into v_group from {{schema}}."group" where group_id = c.group_id and kind = 'standard' for update;
+    if not found or v_group.state <> 'active' then raise exception 'identity:group-not-active'; end if;
+    if not exists (select 1 from {{schema}}.tenant t where t.tenant_id = v_group.tenant_id and t.state = 'active') then
+      raise exception 'identity:tenant-unavailable';
+    end if;
+    v_name := c.target ->> 'name';
+    if v_name is null or c.internal ->> 'nameSkeleton' is null then raise exception 'identity:name-required'; end if;
+    if {{schema}}.service_name_taken(v_group.group_id, c.internal ->> 'nameSkeleton', null) then raise exception 'identity:confusable-name'; end if;
+    insert into {{schema}}.identity (identity_id, kind, state, previous_state, home_tenant_id, personal_group_id, owner_group_id, created_at, state_changed_at, deadline_at, version, name, name_skeleton)
+      values (c.created_id, 'service', 'active', null, v_group.tenant_id, null, v_group.group_id, p_at, p_at, null, 1, v_name, c.internal ->> 'nameSkeleton');
+    perform {{schema}}.enqueue_event('identity.provisioned', c.requester_id, 'identity', c.created_id, 1, null, c.correlation_id, p_at,
+      jsonb_build_object('identityId', c.created_id, 'kind', 'service', 'homeTenantId', v_group.tenant_id, 'personalGroupId', null));
+  else
+    select * into v_i from {{schema}}.identity where identity_id = (c.target ->> 'identityId')::uuid and kind = 'service' for update;
+    if not found then raise exception 'identity:unknown'; end if;
+    if c.type = 'service-identity.join' then
+      select * into v_group from {{schema}}."group" where group_id = c.group_id and kind = 'standard';
+      if not found or v_group.state <> 'active' or not {{schema}}.open_for_members(v_group.group_id) then raise exception 'identity:group-not-active'; end if;
+      if v_i.state <> 'active' then raise exception 'identity:not-eligible'; end if;
+      if v_group.tenant_id <> v_i.home_tenant_id then raise exception 'identity:service-membership'; end if;
+      if {{schema}}.has_live_membership(v_i.identity_id, v_group.group_id) then raise exception 'identity:already-member'; end if;
+      perform set_config('identity.service_join', v_i.identity_id::text, true);
+      insert into {{schema}}.membership (membership_id, identity_id, group_id, tenant_id, kind, state, owner, founding_owner, starts_at, ends_at, ended_at, end_reason, reason_code, created_at, version)
+        values ({{schema}}.uuid_v7(), v_i.identity_id, v_group.group_id, v_group.tenant_id, 'member', 'active', false, false, p_at, null, null, null, null, p_at, 1);
+      perform set_config('identity.service_join', '', true);
+    else
+      -- Decided in the owning group only.
+      if v_i.owner_group_id <> c.group_id then raise exception 'identity:unknown'; end if;
+      if c.type = 'service-identity.suspend' then
+        if v_i.state <> 'active' then raise exception 'identity:not-suspendable'; end if;
+        update {{schema}}.identity set state = 'suspended', previous_state = 'active', state_changed_at = p_at, version = version + 1
+          where identity_id = v_i.identity_id;
+        perform {{schema}}.enqueue_event('identity.suspended', c.requester_id, 'identity', v_i.identity_id, v_i.version + 1, null, c.correlation_id, p_at,
+          jsonb_build_object('identityId', v_i.identity_id, 'reasonCode', c.reason_code, 'changeId', c.change_id, 'breakGlassReviewId', null));
+      elsif c.type = 'service-identity.reinstate' then
+        if v_i.state <> 'suspended' then raise exception 'identity:not-suspended'; end if;
+        update {{schema}}.identity set state = 'active', previous_state = null, state_changed_at = p_at, version = version + 1
+          where identity_id = v_i.identity_id;
+        perform {{schema}}.enqueue_event('identity.reinstated', c.requester_id, 'identity', v_i.identity_id, v_i.version + 1, null, c.correlation_id, p_at,
+          jsonb_build_object('identityId', v_i.identity_id, 'changeId', c.change_id));
+      elsif c.type = 'service-identity.close' then
+        if v_i.state = 'closed' then raise exception 'identity:unknown'; end if;
+        perform {{schema}}.close_now(v_i.identity_id, p_at);
+      else
+        raise exception 'identity:unknown-change';
+      end if;
+    end if;
+  end if;
+  perform set_config('identity.change_id', '', true);
+end $$;
+
+create or replace function {{schema}}.declared_risk(p_type text) returns text language sql immutable as $$
+  select case p_type
+    when 'group.create-root' then 'high' when 'group.reparent' then 'critical' when 'group.archive' then 'high'
+    when 'group.change-settings' then 'high' when 'group.change-approvals' then 'critical'
+    when 'group.change-safety-periods' then 'critical'
+    when 'group.add-owner' then 'critical' when 'group.remove-owner' then 'critical' when 'group.suspend-owner' then 'critical'
+    when 'membership.reinstate' then 'medium' when 'membership.schedule' then 'medium'
+    when 'identity.suspend' then 'high' when 'identity.reinstate' then 'high' when 'service-identity.create' then 'high'
+    when 'group.delete' then 'critical' when 'tenant.close' then 'critical' when 'tenant.cancel-closing' then 'critical'
+    when 'legal-hold.place' then 'critical' when 'legal-hold.release' then 'critical'
+    when 'service-identity.join' then 'high' when 'service-identity.suspend' then 'high'
+    when 'service-identity.reinstate' then 'high' when 'service-identity.close' then 'high'
+  end
+$$;
+
+create or replace function {{schema}}.confers(p_type text) returns boolean language sql immutable as $$
+  select p_type in ('group.add-owner', 'group.appoint-owner', 'membership.reinstate', 'membership.schedule', 'identity.reinstate',
+    'service-identity.join', 'service-identity.reinstate')
+$$;
+
+create or replace function {{schema}}.settle_change(p_change uuid, p_at timestamptz, p_actor uuid) returns text language plpgsql as $$
+declare c {{schema}}.pending_change%rowtype; v_outcome text; v_version integer;
+begin
+  select * into c from {{schema}}.pending_change where change_id = p_change for update;
+  if c.held_until is not null and c.held_until > p_at then
+    update {{schema}}.pending_change set state = 'delayed', delay_ends_at = c.held_until where change_id = p_change;
+    return 'held';
+  end if;
+  begin
+    if c.type = 'group.appoint-owner' then
+      if {{schema}}.digest_of(c) <> c.change_digest then raise exception 'identity:change-differs'; end if;
+      perform {{schema}}.set_context(c.requester_id, c.correlation_id, p_at);
+      perform set_config('identity.change_id', c.change_id::text, true);
+      perform {{schema}}.appoint_owner((c.target ->> 'membershipId')::uuid, p_at);
+      perform set_config('identity.change_id', '', true);
+    elsif c.type = 'group.change-safety-periods' then
+      perform {{schema}}.apply_safety_periods(c, p_at);
+    elsif c.type in ('group.delete', 'tenant.close', 'tenant.cancel-closing', 'legal-hold.place', 'legal-hold.release') then
+      perform {{schema}}.apply_end_of_life(c, p_at);
+    elsif c.type like 'service-identity.%' then
+      perform {{schema}}.apply_service_identity(c, p_at);
+    else
+      perform {{schema}}.apply_change(c, p_at);
+    end if;
+    update {{schema}}.pending_change set state = 'applied', decided_at = p_at where change_id = p_change returning version into v_version;
+    v_outcome := 'applied';
+  exception when others then
+    update {{schema}}.pending_change set state = 'rejected', decided_at = p_at, failure = left(sqlerrm, 200) where change_id = p_change returning version into v_version;
+    v_outcome := 'rejected';
+  end;
+  perform {{schema}}.enqueue_event('approval.decided', p_actor, 'approval', p_change, v_version, c.tenant_id, c.correlation_id, p_at,
+    jsonb_build_object('changeId', p_change, 'outcome', v_outcome));
+  return v_outcome;
+end $$;
+
+-- Privileges ----------------------------------------------------------------
+
+revoke all on all functions in schema {{schema}} from public;
+grant execute on function
+  {{schema}}.service_identity_facts(uuid),
+  {{schema}}.service_name_taken(uuid, text, uuid),
+  {{schema}}.list_service_identities(uuid),
+  {{schema}}.get_service_identity(uuid),
+  {{schema}}.service_identity_audience(uuid, timestamptz),
+  {{schema}}.rename_service_identity(uuid, text, text, uuid, uuid, timestamptz),
+  {{schema}}.end_service_membership(uuid, uuid, uuid, uuid, timestamptz)
+to {{runtime}};
+`,
+  },
 ]
 
 const IDENTIFIER_PATTERN = /^[a-z_][a-z0-9_]{0,62}$/

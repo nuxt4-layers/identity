@@ -92,6 +92,7 @@ async function join() {
       <IdentityMembers :group-id="groupId" />
       <IdentityInvitations :group-id="groupId" />
       <IdentityJoinRequests :group-id="groupId" />
+      <IdentityServiceIdentities :group-id="groupId" />
       <IdentityChanges :group-id="groupId" />
       <IdentitySafetyPeriods :group-id="groupId" :periods="view!.safetyPeriods" :active="group.state === 'active'" @requested="notice = t('identity.safety.requested')" />
 
