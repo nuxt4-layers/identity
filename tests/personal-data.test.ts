@@ -75,15 +75,15 @@ for (const [name, schema] of Object.entries(IDENTITY_DATA_SCHEMAS)) walk(schema,
 
 const PERSONAL_DATA_KEY = /e-?mail|phone|mobile|address|postcode|post-?code|zip|birth|dob|^age$|gender|sex$|nationality|ethnic|religion|avatar|photo|image|picture|given|family|surname|first-?name|last-?name|nickname|user-?name|display|^name$|locale|zoneinfo|^ip$|ip-?address|bio$|note|comment|message|text|description|title|salutation|signature|label/i
 
-/** The only places a name may appear: a group's own safe name. */
-const SAFE_NAME_PATHS = ['group.name', 'groupView.group.name', 'pendingChange.target|0.name', 'scimGroupStructure.displayName', 'selfView.groupNames[].name', 'selfView.formerGroupNames[].name', 'tenantExport.groups[].name']
+/** The only places a name may appear: a group's or a service identity's own safe name (it describes software, never a person). */
+const SAFE_NAME_PATHS = ['group.name', 'groupView.group.name', 'pendingChange.target|0.name', 'pendingChange.target|13.name', 'scimGroupStructure.displayName', 'selfView.groupNames[].name', 'selfView.formerGroupNames[].name', 'tenantExport.groups[].name', 'serviceIdentity.name', 'serviceIdentityList.serviceIdentities[].name']
 
 describe('Identity holds no personal data', () => {
   it('covers every record, event and port answer', () => {
     expect(Object.keys(IDENTITY_DATA_SCHEMAS).sort()).toEqual([
       'actorContext', 'breakGlassReview', 'disclosureContext', 'disposal', 'event', 'governedGroup', 'group', 'groupDescription', 'groupMembersPage', 'groupView', 'identity',
       'identityExport', 'identityExternalId', 'invitation', 'joinRequest', 'legalHold', 'membership', 'pendingChange', 'provisionedIdentity', 'provisioningReservation',
-      'scimGroupStructure', 'scimUserStructure', 'selfView', 'signInStatus', 'tenant', 'tenantExport',
+      'scimGroupStructure', 'scimUserStructure', 'selfView', 'serviceIdentity', 'serviceIdentityAudience', 'serviceIdentityList', 'signInStatus', 'tenant', 'tenantExport',
     ])
     expect(leaves.length).toBeGreaterThan(200)
   })
@@ -92,7 +92,7 @@ describe('Identity holds no personal data', () => {
     expect(objects.filter(object => !object.strict).map(object => object.path)).toEqual([])
   })
 
-  it('names no field for personal data, except a group\'s own name', () => {
+  it('names no field for personal data, except a group\'s or service identity\'s own name', () => {
     const offending = objects.flatMap(object => object.keys
       .filter(key => PERSONAL_DATA_KEY.test(key))
       .map(key => `${object.path}.${key}`))
@@ -104,7 +104,7 @@ describe('Identity holds no personal data', () => {
     expect(leaves.filter(leaf => leaf.kind === 'free-string').map(leaf => leaf.path)).toEqual([])
   })
 
-  it('allows a safe name only as a group\'s name', () => {
+  it('allows a safe name only as a group\'s or service identity\'s name', () => {
     expect(leaves.filter(leaf => leaf.kind === 'safe-name').map(leaf => leaf.path).sort()).toEqual([...SAFE_NAME_PATHS].sort())
   })
 

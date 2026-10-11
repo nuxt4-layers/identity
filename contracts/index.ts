@@ -27,6 +27,7 @@ import { provisionedIdentitySchema, provisioningReservationSchema, signInStatusS
 import { scimGroupStructureSchema, scimUserStructureSchema } from '../shared/scim'
 import { tenantSchema } from '../shared/tenant'
 import { disposalSchema, legalHoldSchema, tenantExportSchema } from '../shared/end-of-life'
+import { serviceIdentityAudienceSchema, serviceIdentityListSchema, serviceIdentitySchema } from '../shared/service-identities'
 
 // Identifiers and codes
 export type { CorrelationId, Identifier, Instant, ReasonCode } from '../shared/identifiers'
@@ -189,6 +190,9 @@ export {
 } from '../shared/end-of-life'
 
 // Break-glass (ADR-0007)
+export type { ServiceIdentity, ServiceIdentityAudience } from '../shared/service-identities'
+export { serviceIdentityAudienceSchema, serviceIdentityListSchema, serviceIdentitySchema } from '../shared/service-identities'
+
 export type { BreakGlassAction, BreakGlassRefusal, BreakGlassReview } from '../shared/break-glass'
 export { BREAK_GLASS_ACTIONS, BREAK_GLASS_REFUSALS, breakGlassReviewSchema, mayCloseReview, refuseBreakGlass } from '../shared/break-glass'
 
@@ -318,4 +322,7 @@ export const IDENTITY_DATA_SCHEMAS: Readonly<Record<string, z.ZodType>> = Object
   legalHold: legalHoldSchema,
   disposal: disposalSchema,
   tenantExport: tenantExportSchema,
+  serviceIdentity: serviceIdentitySchema,
+  serviceIdentityList: serviceIdentityListSchema,
+  serviceIdentityAudience: serviceIdentityAudienceSchema,
 })

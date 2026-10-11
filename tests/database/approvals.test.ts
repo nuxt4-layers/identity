@@ -484,7 +484,7 @@ describe.skipIf(!hasDatabase)('governance approvals on PostgreSQL', () => {
     it('creates a service identity owned by the group, with the identifier given when it was requested', async () => {
       const { groupId, owner } = await childGroup()
       allow(owner, 'identity.service-identities:create', groupId)
-      const change = await approvals().request({ subject: subject(owner), request: { type: 'service-identity.create', target: { groupId }, justification: { reasonCode: 'integration', reference: null } }, correlationId: CORRELATION_ID })
+      const change = await approvals().request({ subject: subject(owner), request: { type: 'service-identity.create', target: { groupId, name: 'Invoice Sync' }, justification: { reasonCode: 'integration', reference: null } }, correlationId: CORRELATION_ID })
       expect(await decide(platformOwner, change)).toMatchObject({ state: 'applied' })
       const published = await events()
       expect(published).toContainEqual(expect.objectContaining({ type: 'identity.provisioned', data: { identityId: change.createdId, kind: 'service', homeTenantId: tenant, personalGroupId: null } }))

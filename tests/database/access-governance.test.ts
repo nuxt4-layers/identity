@@ -237,7 +237,7 @@ describe.skipIf(!hasDatabase)('access governance on PostgreSQL', () => {
     expect((await describeGroup(groupId, owner))?.requester.controls).toEqual([])
     const change = await approvedChange(owner, 'identity.service-identities:create', groupId, {
       type: 'service-identity.create',
-      target: { groupId },
+      target: { groupId, name: 'Nightly Export' },
       justification: { reasonCode: 'integration', reference: null },
     })
     expect(change.createdId).not.toBeNull()
@@ -251,13 +251,13 @@ describe.skipIf(!hasDatabase)('access governance on PostgreSQL', () => {
     const { groupId, owner } = await childGroup()
     const created = await approvedChange(owner, 'identity.service-identities:create', groupId, {
       type: 'service-identity.create',
-      target: { groupId },
+      target: { groupId, name: 'Nightly Export' },
       justification: { reasonCode: 'integration', reference: null },
     })
     const controlled = created.createdId!
     expect((await describeGroup(groupId, owner))?.requester.controls).toEqual([controlled])
-    // The service identity is made an owner of the parent group, the fallback approver's place.
-    await join(controlled, root, { owner: true })
+    // A service identity can never hold the fallback approver's place: the database refuses it as an owner however the row is written.
+    await expect(join(controlled, root, { owner: true })).rejects.toThrow('identity:service-membership')
     const member = await person()
     await join(member, groupId)
     allow(owner, 'identity.group-owners:manage', groupId)

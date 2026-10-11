@@ -42,7 +42,7 @@ describe('events', () => {
 
   it('refuses a payload belonging to another type, and unknown types', () => {
     expect(identityEventSchema.safeParse(event('membership.ended', { identityId: uuidv7() })).success).toBe(false)
-    expect(identityEventSchema.safeParse(event('identity.renamed', { identityId: uuidv7() })).success).toBe(false)
+    expect(identityEventSchema.safeParse(event('identity.teleported', { identityId: uuidv7() })).success).toBe(false)
   })
 
   it('carries what Profile needs to apply a departure: the end reason, never a name', () => {

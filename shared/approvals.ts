@@ -54,6 +54,11 @@ export const GOVERNANCE_CHANGES = Object.freeze({
   'identity.suspend': { permission: 'identity.identities:suspend', confers: false },
   'identity.reinstate': { permission: 'identity.identities:suspend', confers: true },
   'service-identity.create': { permission: 'identity.service-identities:create', confers: false },
+  /** Requested by whoever manages the service identity; decided in the target group by holders of `identity.service-identities:admit`. */
+  'service-identity.join': { permission: 'identity.service-identities:admit', confers: true },
+  'service-identity.suspend': { permission: 'identity.service-identities:manage', confers: false },
+  'service-identity.reinstate': { permission: 'identity.service-identities:manage', confers: true },
+  'service-identity.close': { permission: 'identity.service-identities:manage', confers: false },
   'group.delete': { permission: 'identity.groups:delete', confers: false },
   'tenant.close': { permission: 'identity.tenants:close', confers: false },
   'tenant.cancel-closing': { permission: 'identity.tenants:close', confers: false },
@@ -119,8 +124,20 @@ export const GOVERNANCE_TARGETS = {
   /** Platform-wide reasons only; decided in the host's platform group. */
   'identity.suspend': onIdentity,
   'identity.reinstate': onIdentity,
-  /** A service identity owned by `groupId`. */
-  'service-identity.create': z.strictObject({ groupId: id }),
+  /** A service identity owned by `groupId`, named `name` (a safe name, unique among the group's service identities). */
+  'service-identity.create': z.strictObject({ groupId: id, name: storedSafeNameSchema }),
+  /**
+   * Makes the service identity a `member` (never an owner) of `groupId`, a
+   * group in its owning group's tenant (iam-integration service
+   * identities). Decided in `groupId`, never by whoever controls the
+   * service identity.
+   */
+  'service-identity.join': z.strictObject({ identityId: id, groupId: id }),
+  /** Decided in the service identity's owning group. */
+  'service-identity.suspend': onIdentity,
+  'service-identity.reinstate': onIdentity,
+  /** Closes the service identity at once, without a grace period: its memberships end and its credentials go. */
+  'service-identity.close': onIdentity,
   /**
    * Orphaned-group recovery: makes the active member holding `membershipId`
    * an owner of the orphaned group. Proposed by an owner of the parent group
@@ -193,6 +210,8 @@ export const governanceTargetSchema = z.union([
   onTenant,
   GOVERNANCE_TARGETS['legal-hold.place'],
   GOVERNANCE_TARGETS['legal-hold.release'],
+  GOVERNANCE_TARGETS['service-identity.create'],
+  GOVERNANCE_TARGETS['service-identity.join'],
 ])
 
 export const assuranceRecordSchema = z.strictObject({

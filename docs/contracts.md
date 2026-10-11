@@ -410,6 +410,7 @@ The host calls these on the server; none is an HTTP route. Each uses the supplie
 | `recordIdentityDisposal({ subject, member, eventId, correlationId })` | Records a member's `<member>.group-disposed` or `<member>.tenant-disposed` confirmation, relayed by the host (§22). `eventId` is the member's own event identifier: any lower-case UUID. Idempotent; returns whether it was recorded (not for a disposal that is unknown or not due). Server-only | `validation-failed`, `unavailable` |
 | `getIdentityDisposal({ kind, id })` | A disposal and the members that have confirmed it (`disposalSchema`), for operators' tooling. Server-only | `validation-failed`, `unavailable` |
 | `exportIdentityTenantData({ subject, tenantId, correlationId })` | A closing tenant's governance records (`tenantExportSchema`) for an owner of one of its root groups (`identity.tenants:export`, at `aal2`); writes `tenant.exported`. The host's endpoint composes it with Authorisation's part through iam-integration's adapter | `validation-failed`, `forbidden`, `insufficient-assurance`, `conflict` (not closing), `unavailable` |
+| `getIdentityServiceIdentities()` | Service identities (§23): `list({ subject, groupId, correlationId })` and `get(...)` (`serviceIdentityListSchema`, `serviceIdentitySchema`), `rename({ subject, identityId, name, correlationId })`, `leave({ subject, identityId, groupId, correlationId })` (takes it out of a group), all for whoever holds `identity.service-identities:manage` in the owning group; `mayManageCredentials({ subject, identityId, correlationId })` for Authentication's service-governance port; `describe({ identityId, correlationId })`, the owning group's active owners (`serviceIdentityAudienceSchema`), for the host's notices | `validation-failed`, `forbidden`, `insufficient-assurance`, `conflict` (a confusable name), `unavailable` |
 | `provisionIdentityTenant({ pool, schema?, jurisdiction, dataRegion, externalId?, correlationId })` | The platform operator's tenant provisioning, with the **migration** pool; the runtime role cannot create tenants. The jurisdiction and region must be registered in the policy. Writes `tenant.created` | `validation-failed`, `unavailable` |
 | `bootstrapIdentityRootGroup({ pool, schema?, tenantId, name, firstOwnerId, correlationId })` | The operator's bootstrap of a tenant's first root group and founding owner (an active person), with the migration pool. Refused once the tenant has a root group: later ones are `group.create-root` changes. Writes `group.created` and `membership.added` with a null actor | `validation-failed`, `conflict`, `unavailable` |
 
@@ -440,6 +441,9 @@ The layer mounts these endpoints under `/api/identity` (`IDENTITY_API_PREFIX`). 
 | `GET /changes/:changeId` | A pending change, to those who may see it | `getIdentityApprovals().getPendingChange` |
 | `POST /changes/:changeId/decision`, `/cancel`, `/objection` | Approves or rejects (`{ decision, changeDigest }`), cancels, objects | `getIdentityApprovals()` |
 | `POST /break-glass/actions` | A break-glass action (`{ action, targetId, reasonCode }`); 201 | `getIdentityBreakGlass().act` |
+| `GET /groups/:groupId/service-identities` | The service identities the group owns (§23) | `getIdentityServiceIdentities().list` |
+| `GET /service-identities/:identityId`, `PATCH /service-identities/:identityId` | Shows or renames (`{ name }`) a service identity | `getIdentityServiceIdentities()` |
+| `POST /service-identities/:identityId/leave` | Takes it out of a group (`{ groupId }`) | `getIdentityServiceIdentities().leave` |
 
 Deliberately **not** endpoints, because they need something only the host has:
 
@@ -512,6 +516,27 @@ Identity's part of iam-integration's [group deletion](https://github.com/nuxt4-l
 
 **What the database holds as well.** Legal holds, disposals and confirmations are tables the runtime role cannot read; it reaches them only through SECURITY DEFINER functions. Every insert into a group, membership, invitation or join request is refused in a tenant that is not active, and into a deleted group; the runtime role cannot change a deleted group. Deletion, holds and shutdown apply only through the approvals engine, checking every rule again.
 
+## 23. Service identities
+
+Identity's part of iam-integration's [service identities](https://github.com/nuxt4-layers/iam-integration/blob/bbc683072a36aea812f12337d1722a5db41b836b/docs/processes/service-identities.md) process. A service identity is owned by one standard group, homed in its tenant, with a safe name (§5.4) not confusable with another live one of the group's, no personal group and no personal data. Its credentials are Authentication's.
+
+**Changes** (all `high`, through the approvals engine, §8):
+
+| Change | Decided in | Requester holds | Effect |
+|---|---|---|---|
+| `service-identity.create` (`{ groupId, name }`) | The owning group | `identity.service-identities:create` there | Creates it `active`, a member of no group; `identity.provisioned` (`kind: 'service'`) |
+| `service-identity.join` (`{ identityId, groupId }`) | The target group, by holders of `identity.service-identities:admit` | `identity.service-identities:manage` in the owning group | Adds a `member` membership (never an owner, never a guest) in a group of the owning tenant; whoever may manage the service identity controls it and never approves |
+| `service-identity.suspend`, `.reinstate` | The owning group | `identity.service-identities:manage` there | `suspended` and back: no sign-in, no access from memberships |
+| `service-identity.close` | The owning group | The same | Closed at once: memberships end, `identity.closed` |
+
+A platform operator's `identity.suspend` reaches a service identity too. Deleting the owning group closes its service identities (§22); a group cannot be archived while one it owns is active.
+
+**Without approval**, for whoever holds `identity.service-identities:manage` in the owning group: renaming (`identity.renamed`, which names no name), and taking the service identity out of a group, as a person leaves (`membership.ended`, reason `left`).
+
+**For Authentication.** `mayManageCredentials` answers iam-integration's service-governance adapter: true only for an active service identity and a subject the access-decision port allows `identity.service-identities:manage` in its owning group. `describe` names the owning group's active owners for the notices of credentials issued, revoked or expiring. The sign-in status (§10.1) of a service identity is `allowed` only while it is `active`.
+
+**What the database holds as well.** A guard trigger, with no exception for the migration role, refuses any membership of a service identity that is an owner, a guest, outside its home tenant, or not made by an applied `service-identity.join`. Only active people request or approve changes, in the layer and in `record_change` and `record_decision`.
+
 ## 17. Versioning
 
 This is contract version 1, provided by package 0.1. Before 1.0, breaking changes are listed here and in the release notes. Reserved for later versions: further `pausing` values (`notice`, `approval`), identity-provider group-claim mapping (improvement register item 18), and the tenancy module's extraction.
@@ -531,4 +556,5 @@ Changes before 1.0:
 | Safety periods | `group.change-safety-periods`; `safetyPeriodsSchema`, `effectiveSafetyPeriodsSchema` and helpers; `groupViewSchema` gains `safetyPeriods`; `group.settings-changed` may name `safetyPeriods`; migration `0007_safety_periods` | `groupViewSchema` readers gain a field, and anyone constructing it must add it; consumers of `group.settings-changed` must accept the new setting name |
 | 5c | `selfViewSchema` gains `formerGroupNames` (the person's groups left, for Profile's page to choose anonymity in one of them); migration `0008_former_group_names`; `DELIBERATE_PAIRINGS` moves to `presentation/pairings.ts` and is no longer auto-imported (still exported from `./presentation`) | Anyone constructing `selfViewSchema` must add the field; hosts that used the auto-imported `DELIBERATE_PAIRINGS` import it from `./presentation` |
 | 6 | `getIdentityAccessGovernance()` and `governedGroupSchema` (§10.4), for Authorisation's own pending changes; migration `0009_access_governance`; the consumed ports become §10.5 | No |
+| 8 | Service identities (§23): `service-identity.create` names one (`{ groupId, name }`); `service-identity.join`, `.suspend`, `.reinstate` and `.close`; the permission `identity.service-identities:admit`; the event `identity.renamed`; `serviceIdentitySchema`, `serviceIdentityListSchema`, `serviceIdentityAudienceSchema`; `getIdentityServiceIdentities()` and four endpoints; migration `0011_service_identities` | Requesters of `service-identity.create` must add `name`; hosts' catalogues must add the permission |
 | 7 | End of life (§22): `group.delete`, `tenant.close`, `tenant.cancel-closing`, `legal-hold.place` and `legal-hold.release`; four permissions; `GROUP_RECORD_STATES` with `deleted`; membership end reason `group-deleted`; `tenantSchema.closesAt`; `tenant.closing` gains `closesAt`, and new group, tenant, identity, legal-hold and retention events; `PROFILE_CONSUMED_EVENT_TYPES` gains `group.deleted` and `group.disposal-due`; `legalHoldSchema`, `disposalSchema`, `tenantExportSchema`; the safety period `tenantClosingNoticeDays` and five retention settings; `IdentityPolicy.disposalParticipants`; `MaintenanceResult` gains counts; migration `0010_end_of_life` | Consumers of `tenant.closing` must accept `closesAt`; readers of `groupSchema` and `membershipSchema` must accept `deleted` and `group-deleted`; anyone constructing `tenantSchema` must add `closesAt`; hosts' catalogues must add the four permissions |

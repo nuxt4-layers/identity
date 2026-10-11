@@ -173,6 +173,13 @@ export const IDENTITY_MESSAGES_EN_GB = {
 
   // Join requests
   'identity.joinRequests.title': 'Requests to join',
+  'identity.serviceIdentities.title': 'Service accounts',
+  'identity.serviceIdentities.unnamed': 'Unnamed service account',
+  'identity.serviceIdentities.groups': 'In {count} group(s)',
+  'identity.serviceIdentities.name': 'Name',
+  'identity.serviceIdentities.rename': 'Rename',
+  'identity.serviceIdentities.save': 'Save',
+  'identity.serviceIdentities.cancel': 'Cancel',
   'identity.joinRequests.approve': 'Approve',
   'identity.joinRequests.refuse': 'Refuse',
 
@@ -220,6 +227,10 @@ export const IDENTITY_MESSAGES_EN_GB = {
   'identity.changeType.identity.suspend': 'Suspend an account',
   'identity.changeType.identity.reinstate': 'Reinstate an account',
   'identity.changeType.service-identity.create': 'Create a service account',
+  'identity.changeType.service-identity.join': 'Add a service account to the group',
+  'identity.changeType.service-identity.suspend': 'Suspend a service account',
+  'identity.changeType.service-identity.reinstate': 'Reinstate a service account',
+  'identity.changeType.service-identity.close': 'Close a service account',
   'identity.changeType.group.delete': 'Delete a group',
   'identity.changeType.tenant.close': 'Shut down a tenant',
   'identity.changeType.tenant.cancel-closing': 'Cancel a tenant\'s shutdown',
