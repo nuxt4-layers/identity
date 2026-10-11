@@ -535,6 +535,8 @@ A platform operator's `identity.suspend` reaches a service identity too. Deletin
 
 **For Authentication.** `mayManageCredentials` answers iam-integration's service-governance adapter: true only for an active service identity and a subject the access-decision port allows `identity.service-identities:manage` in its owning group. `describe` names the owning group's active owners for the notices of credentials issued, revoked or expiring. The sign-in status (§10.1) of a service identity is `allowed` only while it is `active`.
 
+**Never an owner.** `group.add-owner` for a service identity's membership is refused when requested (`conflict`), and again when it applies.
+
 **What the database holds as well.** A guard trigger, with no exception for the migration role, refuses any membership of a service identity that is an owner, a guest, outside its home tenant, or not made by an applied `service-identity.join`. Only active people request or approve changes, in the layer and in `record_change` and `record_decision`.
 
 ## 17. Versioning
