@@ -1,7 +1,7 @@
 {
   "schemaVersion": "1",
   "name": "@nuxt4-layers/identity",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "classification": "foundation",
   "provides": [
     {

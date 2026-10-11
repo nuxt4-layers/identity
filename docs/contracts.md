@@ -541,7 +541,7 @@ A platform operator's `identity.suspend` reaches a service identity too. Deletin
 
 ## 17. Versioning
 
-This is contract version 1, provided by package 0.1. Before 1.0, breaking changes are listed here and in the release notes. Reserved for later versions: further `pausing` values (`notice`, `approval`), identity-provider group-claim mapping (improvement register item 18), and the tenancy module's extraction.
+This is contract version 1, provided by package 1.0, and frozen for 1.x. From 1.0 the package follows [semantic versioning](https://semver.org/): a change that breaks the contract (a removed or narrowed type, function, endpoint, event or port, or a stricter rule a host must act on) needs a new contract version and a major release; an addition is a minor release; a fix is a patch. Each release is listed in `CHANGELOG.md`. Reserved for later versions: further `pausing` values (`notice`, `approval`), identity-provider group-claim mapping (improvement register item 18), and the tenancy module's extraction.
 
 Changes before 1.0:
 
