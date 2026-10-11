@@ -191,6 +191,10 @@ describe.skipIf(!hasDatabase)('service identities on PostgreSQL', () => {
       const actor = await createDirectory(db, clock).resolveActor(identityId, { consistency: 'strong' })
       expect(actor).toMatchObject({ identityId, kind: 'service', personalGroup: null })
       expect(actor?.memberships.map(m => m.group.groupId)).toEqual([target])
+      // Never an owner: refused when asked, not left to fail when it applies.
+      allow(targetAdmin, 'identity.group-owners:manage', target)
+      await expect(approvals().request({ subject: subject(targetAdmin), request: { type: 'group.add-owner', target: { membershipId: added!.data.membershipId as string }, justification }, correlationId: CORRELATION_ID }))
+        .rejects.toMatchObject({ code: 'conflict' })
     })
 
     it('refuses a group in another tenant, a second membership, and a requester who does not manage it', async () => {

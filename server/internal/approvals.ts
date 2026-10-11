@@ -434,6 +434,8 @@ export function createApprovals({ db, access, approvalPolicy, policy, clock = sy
               case 'group.add-owner':
                 if (facts.owner) return 'already an owner'
                 if (facts.kind !== 'member' || facts.state !== 'active') return 'only an active member can become an owner'
+                // A service identity never owns a group (§23); the database refuses it too, but the request is refused here, not left to fail.
+                if ((await db.transaction(client => signInState(client, facts.identityId)))?.kind === 'service') return 'a service identity never owns a group'
                 return null
               case 'group.remove-owner':
               case 'group.suspend-owner':
