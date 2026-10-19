@@ -23,6 +23,7 @@ import { exportIdentityData, getIdentityJoining, getIdentityScimStructure } from
 import type { TestDatabase } from '../support/database'
 import { createTestDatabase, hasDatabase, requireDatabaseInCi, seed } from '../support/database'
 import { CORRELATION_ID, uuidv7 } from '../support/fixtures'
+import { toPosix } from '../support/paths'
 
 requireDatabaseInCi()
 
@@ -33,7 +34,7 @@ function endpointFiles(directory: string = API): { file: string, method: string,
   return readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
     const path = join(directory, entry.name)
     if (entry.isDirectory()) return endpointFiles(path)
-    const match = /^(.*)\.(get|post|patch|delete)\.ts$/.exec(relative(API, path))
+    const match = /^(.*)\.(get|post|patch|delete)\.ts$/.exec(toPosix(relative(API, path)))
     if (!match) throw new Error(`Unexpected file in server/api/identity: ${entry.name}`)
     const route = `/api/identity/${match[1]!}`.replace(/\[(\w+)\]/g, ':$1').replace(/\/index$/, '')
     return [{ file: path, method: match[2]!, route }]

@@ -1,6 +1,7 @@
 import { readdirSync, readFileSync } from 'node:fs'
 import { dirname, join, normalize, relative } from 'node:path'
 import { describe, expect, it } from 'vitest'
+import { toPosix } from './support/paths'
 import * as contracts from '../contracts'
 
 const root = normalize(join(import.meta.dirname, '..'))
@@ -8,14 +9,14 @@ const root = normalize(join(import.meta.dirname, '..'))
 function files(dir: string): string[] {
   return readdirSync(join(root, dir), { recursive: true, encoding: 'utf8' })
     .filter(file => file.endsWith('.ts'))
-    .map(file => join(dir, file))
+    .map(file => toPosix(join(dir, file)))
 }
 
 /** Import specifiers, with relative ones resolved to repository paths. */
 function imports(file: string): string[] {
   const source = readFileSync(join(root, file), 'utf8')
   return [...source.matchAll(/(?:from|import)\s*\(?\s*'([^']+)'/g)].map(([, specifier]) =>
-    specifier!.startsWith('.') ? relative(root, join(root, dirname(file), specifier!)) : specifier!)
+    specifier!.startsWith('.') ? toPosix(relative(root, join(root, dirname(file), specifier!))) : specifier!)
 }
 
 const contractFiles = [...files('contracts'), ...files('shared'), ...files('conformance')]
